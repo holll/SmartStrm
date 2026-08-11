@@ -1,0 +1,72 @@
+name: Release Build
+
+# 仅在推送 tag（v*）时触发，如: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+            ext: .exe
+          - os: linux
+            arch: amd64
+            ext: ''
+          - os: darwin
+            arch: amd64
+            ext: ''
+          - os: darwin
+            arch: arm64
+            ext: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="${{ github.sha }}"
+          BUILDTIME="$(date -u +%Y-%m-%d_%H-%M-%S)"
+          echo "Building smartstrm ${VERSION} (commit ${COMMIT:0:8}) for ${GOOS}/${GOARCH}"
+          go build \
+            -o "dist/smartstrm_${GOOS}_${GOARCH}${{ matrix.ext }}" \
+            -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildTime=${BUILDTIME}" \
+            ./cmd/server
+          echo "Version=${VERSION}" > dist/version.txt
+          echo "Commit=${COMMIT}" >> dist/version.txt
+          echo "BuildTime=${BUILDTIME}" >> dist/version.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartstrm-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
