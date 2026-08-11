@@ -99,8 +99,10 @@ walkDir(根路径, "", mtime=0)                    递归：
 
 ### 2.2 目录时间检查
 
-- 每次扫描后把目录 mtime 写入 `{任务目录}/.smartstrm/dir_cache.json`（`map[远端路径]unix时间戳`）
+- 远端目录 mtime 来自 OpenList 接口（`/api/fs/list` 的 modified 字段，随列表返回，无额外请求）
+- 每次扫描成功后把目录 mtime 快照写入 SQLite `dir_cache` 表（`(task, remote_path, mtime)` 主键，按任务分区）
 - 下次运行：`dir_time_check=true` 且远端 mtime ≤ 缓存值 → 跳过递归
+- 运行开始全量载入内存、结束事务批量 upsert（3000 条写入约 25ms）
 - mtime 解析失败（零值）时**不跳过**，保证安全
 
 ### 2.3 增量 vs 同步
@@ -262,6 +264,7 @@ Emby 通知（item.deleted / ItemDeleted / library.deleted）
 |---|---|---|
 | `runs` | 每次运行记录（任务/起止时间/状态/生成统计/错误） | 运行历史、统计报表、趋势查询 |
 | `task_logs` | 按 run_id 关联的完整日志段 | 历史日志回看（实时增量仍走内存缓冲） |
+| `dir_cache` | 目录时间检查缓存 `(task, remote_path, mtime)` | 目录 mtime 快照（几千条场景优于 JSON 文件） |
 | `audit_logs` | 登录/配置变更/运行操作/Webhook/Emby 删除审计 | 审计追责 |
 
 - 驱动：`modernc.org/sqlite`（纯 Go，无 CGO，Windows 部署友好）
@@ -274,11 +277,12 @@ Emby 通知（item.deleted / ItemDeleted / library.deleted）
 
 ```
 {save_dir}/{任务名}/
-├── .smartstrm/dir_cache.json   # 目录时间检查缓存（清理时保留）
-├── 目录结构镜像远端/
-│   ├── xxx.(mp4).strm          # 生成的 STRM（默认命名）
-│   └── xxx.nfo / xxx.jpg       # 复制的刮削文件
+└── 目录结构镜像远端/
+    ├── xxx.(mp4).strm          # 生成的 STRM（默认命名）
+    └── xxx.nfo / xxx.jpg       # 复制的刮削文件
 ```
+
+目录时间检查缓存存于 SQLite `dir_cache` 表（按任务分区），不再生成本地元数据文件。
 
 ---
 

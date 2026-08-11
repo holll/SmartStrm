@@ -3,7 +3,6 @@ package generator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"smartstrm/internal/config"
+	"smartstrm/internal/db"
 	"smartstrm/internal/driver"
 	"smartstrm/internal/plugins"
 )
@@ -38,6 +38,7 @@ type Generator struct {
 	cfg     *config.Config
 	task    *config.Task
 	drv     driver.Driver
+	db      *db.DB
 	env     *plugins.Env
 	taskDir string // save_dir/任务名
 	result  *Result
@@ -46,16 +47,17 @@ type Generator struct {
 
 	// 同步模式：远端存在的本地文件集合（相对 taskDir 的路径）
 	remoteSet map[string]bool
-	// 目录时间检查缓存: remotePath → 上次扫描时的远端 mtime(unix)
+	// 目录时间检查缓存: remotePath → 上次扫描时的远端 mtime(unix)（持久化于 SQLite dir_cache 表）
 	dirCache map[string]int64
 }
 
 // New 创建生成器
-func New(cfg *config.Config, task *config.Task, drv driver.Driver) *Generator {
+func New(cfg *config.Config, task *config.Task, drv driver.Driver, database *db.DB) *Generator {
 	return &Generator{
 		cfg:       cfg,
 		task:      task,
 		drv:       drv,
+		db:        database,
 		taskDir:   filepath.Join(cfg.STRM.SaveDir, task.Name),
 		client:    &http.Client{Timeout: 60 * time.Second},
 		remoteSet: map[string]bool{},
@@ -296,9 +298,6 @@ func (g *Generator) cleanupLocal() {
 			return nil
 		}
 		rel := relFrom(g.taskDir, path)
-		if strings.HasPrefix(rel, ".smartstrm") {
-			return nil // 元数据目录不清理
-		}
 		if g.task.KeepLocalAst && !strings.HasSuffix(rel, ".strm") {
 			return nil // 保留本地刮削文件
 		}
@@ -320,24 +319,27 @@ func (g *Generator) cleanupLocal() {
 	}
 }
 
-// ============ 目录时间检查 ============
-
-func (g *Generator) cacheFile() string {
-	return filepath.Join(g.taskDir, ".smartstrm", "dir_cache.json")
-}
+// ============ 目录时间检查（缓存持久化于 SQLite） ============
 
 func (g *Generator) loadDirCache() {
-	data, err := os.ReadFile(g.cacheFile())
-	if err != nil {
+	if g.db == nil {
 		return
 	}
-	_ = json.Unmarshal(data, &g.dirCache)
+	cache, err := g.db.LoadDirCache(g.task.Name)
+	if err != nil {
+		g.logf("WARN", "读取目录时间缓存失败: %v", err)
+		return
+	}
+	g.dirCache = cache
 }
 
 func (g *Generator) saveDirCache() {
-	_ = os.MkdirAll(filepath.Dir(g.cacheFile()), 0o755)
-	data, _ := json.Marshal(g.dirCache)
-	_ = os.WriteFile(g.cacheFile(), data, 0o644)
+	if g.db == nil {
+		return
+	}
+	if err := g.db.SaveDirCache(g.task.Name, g.dirCache); err != nil {
+		g.logf("WARN", "保存目录时间缓存失败: %v", err)
+	}
 }
 
 // dirUnchanged 远端目录 mtime 未超过本地缓存则视为未变化

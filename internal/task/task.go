@@ -295,7 +295,7 @@ func (m *Manager) runTask(ctx context.Context, name string, logbuf *LogBuffer) *
 		return res
 	}
 
-	gen := generator.New(cfg, taskCfg, drv)
+	gen := generator.New(cfg, taskCfg, drv, m.db)
 	gen.SetLogger(logbuf)
 	res.Result = gen.Run(ctx)
 	if ctx.Err() != nil {

@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dir_cache (
+	task TEXT NOT NULL,
+	remote_path TEXT NOT NULL,
+	mtime INTEGER NOT NULL,
+	PRIMARY KEY (task, remote_path)
+);
 `
 
 // MigrateAdminTables 创建账号/设置表
@@ -123,4 +129,49 @@ func SetSettingJSON(d *DB, key string, v any) error {
 		return err
 	}
 	return d.SetSetting(key, string(b))
+}
+
+// ============ dir_cache（目录时间检查缓存，按任务分区） ============
+
+// LoadDirCache 读取任务的全部目录 mtime 快照
+func (d *DB) LoadDirCache(task string) (map[string]int64, error) {
+	rows, err := d.conn.Query(`SELECT remote_path, mtime FROM dir_cache WHERE task=?`, task)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var path string
+		var mtime int64
+		if err := rows.Scan(&path, &mtime); err != nil {
+			return nil, err
+		}
+		out[path] = mtime
+	}
+	return out, nil
+}
+
+// SaveDirCache 事务批量写入目录 mtime 快照（upsert）
+func (d *DB) SaveDirCache(task string, cache map[string]int64) error {
+	if len(cache) == 0 {
+		return nil
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO dir_cache (task, remote_path, mtime) VALUES (?, ?, ?)
+		ON CONFLICT(task, remote_path) DO UPDATE SET mtime=excluded.mtime`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for path, mtime := range cache {
+		if _, err := stmt.Exec(task, path, mtime); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
