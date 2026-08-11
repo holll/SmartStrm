@@ -296,30 +296,7 @@ Emby 通知（item.deleted / ItemDeleted / library.deleted）
 
 ## 8. 测试
 
-### 8.1 mock/openlist
-
-自研 mock OpenList 服务器（`:19090`），内置测试目录树：
-
-```
-/115/FC2/{A, B, sample.mp4(50MB), advert.mkv(300MB)}
-/115/FC2/A/{ADN-468.mp4(300MB), ADN-468.nfo, ADN-468.jpg, tiny.mp4(1KB)}
-/115/AV/Movie-2026.mp4(1GB)
-```
-
-覆盖：分页列表、fs/get、fs/remove（目录与文件）、/d/ 下载。
-
-### 8.2 冒烟测试（mock/smoke.sh）
-
-| 步骤 | 验证点 |
-|---|---|
-| 登录 | token 签发 |
-| 运行任务 | generated/copied/skipped 计数 |
-| 二次运行 | 目录时间检查跳过未变化目录 |
-| 产物检查 | STRM 内容格式、刮削文件复制、关键词过滤（advert）、大小阈值（tiny） |
-| Emby 删除同步 | 路径映射 + 白名单 + 远端删除 |
-| Webhook 触发 | `{"strmtask":"FC2"}` → `{"ok":true}` |
-
-运行：`bash mock/smoke.sh`（需先 `go build -o build/` 两个二进制）。
+开发期使用自研 mock OpenList 服务器 + 冒烟脚本做过全链路验证（生成/过滤/复制/删除同步/Webhook 触发/目录时间检查），已随正式代码剔除（正式运行不依赖）。
 
 ---
 

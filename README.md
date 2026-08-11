@@ -96,10 +96,9 @@ mock/               mock OpenList 服务器 + 冒烟测试脚本
 docs/               技术文档
 ```
 
-## 测试
+## 构建
 
 ```bash
 go build -o build/smartstrm.exe ./cmd/server
-go build -o build/mock-openlist.exe ./mock/openlist
-bash mock/smoke.sh    # 全链路冒烟测试（生成/过滤/复制/删除同步/Webhook 触发）
+# 或使用 build.bat（多平台构建 + 版本注入）
 ```
