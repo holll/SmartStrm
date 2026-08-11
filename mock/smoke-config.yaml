@@ -1,0 +1,33 @@
+server:
+    addr: :8024
+    username: admin
+    password: admin
+strm:
+    media_ext:
+        - mp4
+        - mkv
+        - mov
+        - avi
+        - wmv
+    media_size: 20
+    copy_ext:
+        - nfo
+        - jpg
+        - png
+        - ass
+        - srt
+    save_dir: /strm
+    url_encode: true
+    gen_type: path
+    strm_base: ""
+webhook:
+    token: 9m9a4ub46zzv999n
+    emby_delete_sync:
+        enabled: false
+        strm_in_emby: /data/docker/smartstrm/strm
+        storage_path_map: /115
+        storage: ""
+        allowed_prefix: []
+plugins: {}
+storages: []
+tasks: []

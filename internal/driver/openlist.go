@@ -1,0 +1,173 @@
+package driver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+var (
+	// ErrUnsupportedDriver 不支持的驱动类型
+	ErrUnsupportedDriver = errors.New("不支持的驱动类型，目前仅支持 openlist")
+	// ErrNotFound 路径不存在
+	ErrNotFound = errors.New("路径不存在")
+)
+
+// OpenList OpenList/AList 驱动
+type OpenList struct {
+	base   string
+	token  string
+	client *http.Client
+}
+
+// NewOpenList 创建 OpenList 驱动
+func NewOpenList(base, token string) *OpenList {
+	return &OpenList{
+		base:  stringsTrimSuffix(base),
+		token: token,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func stringsTrimSuffix(s string) string {
+	for len(s) > 1 && s[len(s)-1] == '/' {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// apiResp OpenList API 通用响应
+type apiResp struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+// listData /api/fs/list 响应
+type listData struct {
+	Content []struct {
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		IsDir    bool   `json:"is_dir"`
+		Modified string `json:"modified"`
+	} `json:"content"`
+}
+
+// getData /api/fs/get 响应
+type getData struct {
+	RawURL string `json:"raw_url"`
+	URL    string `json:"url"`
+}
+
+// post 向 OpenList API 发 POST 请求
+func (o *OpenList) post(ctx context.Context, api string, payload any) (apiResp, error) {
+	var resp apiResp
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return resp, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.base+api, bytes.NewReader(body))
+	if err != nil {
+		return resp, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.token != "" {
+		req.Header.Set("Authorization", o.token)
+	}
+	r, err := o.client.Do(req)
+	if err != nil {
+		return resp, err
+	}
+	defer r.Body.Close()
+	data, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return resp, fmt.Errorf("OpenList 响应解析失败: %s", string(data))
+	}
+	if resp.Code != 200 {
+		return resp, fmt.Errorf("OpenList %s: code=%d message=%s", api, resp.Code, resp.Message)
+	}
+	return resp, nil
+}
+
+// List 列出目录内容，处理分页
+func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
+	var files []File
+	page := 1
+	for {
+		resp, err := o.post(ctx, "/api/fs/list", map[string]any{
+			"path":     path,
+			"password": "",
+			"page":     page,
+			"per_page": 200,
+			"refresh":  false,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if string(resp.Data) == "null" || len(resp.Data) == 0 {
+			return nil, ErrNotFound
+		}
+		var d listData
+		if err := json.Unmarshal(resp.Data, &d); err != nil {
+			return nil, err
+		}
+		for _, c := range d.Content {
+			f := File{Name: c.Name, Size: c.Size, IsDir: c.IsDir}
+			if t, err := time.ParseInLocation("2006-01-02 15:04:05", c.Modified, time.Local); err == nil {
+				f.Modified = t
+			}
+			files = append(files, f)
+		}
+		if len(d.Content) < 200 {
+			break
+		}
+		page++
+	}
+	return files, nil
+}
+
+// GetDirectLink 获取文件直链
+func (o *OpenList) GetDirectLink(ctx context.Context, path string) (string, error) {
+	resp, err := o.post(ctx, "/api/fs/get", map[string]any{"path": path, "password": ""})
+	if err != nil {
+		return "", err
+	}
+	var d getData
+	if err := json.Unmarshal(resp.Data, &d); err != nil {
+		return "", err
+	}
+	link := d.RawURL
+	if link == "" {
+		link = d.URL
+	}
+	if link == "" {
+		return "", fmt.Errorf("未获取到 %s 的直链", path)
+	}
+	return link, nil
+}
+
+// Remove 删除路径（文件或目录）
+func (o *OpenList) Remove(ctx context.Context, path string) error {
+	_, err := o.post(ctx, "/api/fs/remove", map[string]any{"path": path})
+	return err
+}
+
+// Rename 重命名
+func (o *OpenList) Rename(ctx context.Context, path, newName string) error {
+	_, err := o.post(ctx, "/api/fs/rename", map[string]any{"path": path, "name": newName})
+	return err
+}
+
+// DownloadURL 构造路径兼容模式的直链 URL（OpenList /d/ 下载路径）
+// 若配置了 StrmBase 则使用它，否则使用存储自身地址
+func (o *OpenList) DownloadURL(path string) string {
+	return o.base + "/d" + path
+}
+
+// Base 返回存储基地址
+func (o *OpenList) Base() string { return o.base }
