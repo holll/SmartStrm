@@ -3,6 +3,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -118,22 +119,37 @@ func buildConfig(database *db.DB, port int) *config.Config {
 	cfg.Server.Port = port
 	cfg.Server.Username = "admin"
 
-	// STRM 设置（无记录时写入默认值）
-	strmCfg, err := db.GetSettingJSON(database, "strm", config.DefaultSTRM())
+	// STRM 设置：无记录时写入默认值并持久化
+	strmRaw, has, err := database.GetSetting("strm")
 	if err != nil {
 		log.Fatalf("读取 STRM 设置失败: %v", err)
 	}
-	cfg.STRM = strmCfg
+	if !has {
+		cfg.STRM = config.DefaultSTRM()
+		if err := db.SetSettingJSON(database, "strm", cfg.STRM); err != nil {
+			log.Fatalf("写入默认 STRM 设置失败: %v", err)
+		}
+		log.Printf("已写入默认 STRM 设置")
+	} else if err := json.Unmarshal([]byte(strmRaw), &cfg.STRM); err != nil {
+		log.Fatalf("解析 STRM 设置失败: %v", err)
+	}
 
-	// 插件全局配置
-	plugins, err := db.GetSettingJSON(database, "plugins", config.DefaultPlugins())
+	// 插件全局配置：无记录时写入空默认
+	pluginsRaw, has, err := database.GetSetting("plugins")
 	if err != nil {
 		log.Fatalf("读取插件配置失败: %v", err)
 	}
-	if plugins == nil {
-		plugins = config.DefaultPlugins()
+	if !has {
+		cfg.Plugins = config.DefaultPlugins()
+		if err := db.SetSettingJSON(database, "plugins", cfg.Plugins); err != nil {
+			log.Fatalf("写入默认插件配置失败: %v", err)
+		}
+	} else if err := json.Unmarshal([]byte(pluginsRaw), &cfg.Plugins); err != nil {
+		log.Fatalf("解析插件配置失败: %v", err)
 	}
-	cfg.Plugins = plugins
+	if cfg.Plugins == nil {
+		cfg.Plugins = config.DefaultPlugins()
+	}
 
 	// 存储 / 任务
 	if cfg.Storages, err = database.ListStorages(); err != nil {
