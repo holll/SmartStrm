@@ -23,11 +23,11 @@ async function doLogin() {
   const btn = document.getElementById('loginBtn');
   btn.disabled = true; btn.textContent = '登录中…';
   try {
-    const d = await api('/api/login', 'POST', {username: 'admin', password: loginPass.value});
+    const d = await api('/api/login', 'POST', {username: 'admin', password: document.getElementById('loginPass').value});
     TOKEN = d.token; localStorage.setItem('ss_token', TOKEN);
-    loginErr.textContent = '';
+    document.getElementById('loginErr').textContent = '';
     showApp(); loadAll();
-  } catch(e) { loginErr.textContent = e.message; }
+  } catch(e) { document.getElementById('loginErr').textContent = e.message; }
   btn.disabled = false; btn.textContent = '登录';
 }
 function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; api('/api/logout','POST').catch(()=>{}); showLogin(); }
@@ -385,7 +385,7 @@ function openStorage(name) {
   window._editStorage = s ? s.name : null;
 }
 async function saveStorage() {
-  const body = {name:st_name.value.trim(), driver:'openlist', url:st_url.value.trim(), token:st_token.value.trim()};
+  const body = {name:document.getElementById('st-name').value.trim(), driver:'openlist', url:document.getElementById('st-url').value.trim(), token:document.getElementById('st-token').value.trim()};
   if (!body.name || !body.url) { alert('名称与地址不能为空'); return; }
   const btn = document.getElementById('saveStorageBtn');
   btn.disabled = true; btn.textContent = '保存中…';
@@ -506,13 +506,13 @@ async function loadAudit() {
 async function loadSettings() {
   try {
     const s = await api('/api/settings');
-    s_mediaExt.value = s.strm.media_ext.join(',');
-    s_mediaSize.value = s.strm.media_size;
-    s_copyExt.value = s.strm.copy_ext.join(',');
-    s_saveDir.value = s.strm.save_dir;
-    s_strmBase.value = s.strm.strm_base || '';
-    s_urlEncode.checked = s.strm.url_encode;
-    s_genType.value = s.strm.gen_type || 'path';
+    document.getElementById('s-mediaExt').value = s.strm.media_ext.join(',');
+    document.getElementById('s-mediaSize').value = s.strm.media_size;
+    document.getElementById('s-copyExt').value = s.strm.copy_ext.join(',');
+    document.getElementById('s-saveDir').value = s.strm.save_dir;
+    document.getElementById('s-strmBase').value = s.strm.strm_base || '';
+    document.getElementById('s-urlEncode').checked = s.strm.url_encode;
+    document.getElementById('s-genType').value = s.strm.gen_type || 'path';
     const wh = await api('/api/webhook/info');
     document.getElementById('webhookInfo').innerHTML =
       `<div class="form-row"><label>任务触发 Webhook 地址（QAS/CloudSaver 转存后推送）</label><div class="mono">${esc(wh.trigger)}</div></div>
@@ -520,10 +520,10 @@ async function loadSettings() {
        <div class="form-row"><label>POST JSON：</label><div class="mono">{&quot;strmtask&quot;: &quot;fc2,av&quot;}</div></div>`;
     // Emby 删除同步配置
     const es = wh.emby_sync || {};
-    wh_embyEnabled.checked = !!es.enabled;
-    wh_strmInEmby.value = es.strm_in_emby || '';
-    wh_pathMap.value = es.storage_path_map || '';
-    wh_allowed.value = (es.allowed_prefix || []).join(',');
+    document.getElementById('wh-embyEnabled').checked = !!es.enabled;
+    document.getElementById('wh-strmInEmby').value = es.strm_in_emby || '';
+    document.getElementById('wh-pathMap').value = es.storage_path_map || '';
+    document.getElementById('wh-allowed').value = (es.allowed_prefix || []).join(',');
     const sel = document.getElementById('wh-storage');
     sel.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
     sel.value = es.storage || '';
@@ -536,11 +536,11 @@ async function saveWebhook() {
   try {
     await api('/api/webhook', 'PUT', {
       emby_delete_sync: {
-        enabled: wh_embyEnabled.checked,
-        strm_in_emby: wh_strmInEmby.value.trim(),
-        storage_path_map: wh_pathMap.value.trim(),
-        storage: wh_storage.value,
-        allowed_prefix: wh_allowed.value.split(',').map(s=>s.trim()).filter(Boolean)
+        enabled: document.getElementById('wh-embyEnabled').checked,
+        strm_in_emby: document.getElementById('wh-strmInEmby').value.trim(),
+        storage_path_map: document.getElementById('wh-pathMap').value.trim(),
+        storage: document.getElementById('wh-storage').value,
+        allowed_prefix: document.getElementById('wh-allowed').value.split(',').map(s=>s.trim()).filter(Boolean)
       }
     });
     alert('已保存');
@@ -584,13 +584,13 @@ async function saveSettings() {
   try {
     await api('/api/settings','PUT',{
       strm: {
-        media_ext: s_mediaExt.value.split(',').map(s=>s.trim()).filter(Boolean),
-        media_size: parseInt(s_mediaSize.value)||0,
-        copy_ext: s_copyExt.value.split(',').map(s=>s.trim()).filter(Boolean),
-        save_dir: s_saveDir.value.trim(),
-        url_encode: s_urlEncode.checked,
-        gen_type: s_genType.value,
-        strm_base: s_strmBase.value.trim()
+        media_ext: document.getElementById('s-mediaExt').value.split(',').map(s=>s.trim()).filter(Boolean),
+        media_size: parseInt(document.getElementById('s-mediaSize').value)||0,
+        copy_ext: document.getElementById('s-copyExt').value.split(',').map(s=>s.trim()).filter(Boolean),
+        save_dir: document.getElementById('s-saveDir').value.trim(),
+        url_encode: document.getElementById('s-urlEncode').checked,
+        gen_type: document.getElementById('s-genType').value,
+        strm_base: document.getElementById('s-strmBase').value.trim()
       }
     });
     alert('已保存');
