@@ -65,6 +65,19 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # 统一发布：所有构建产物收集完成后由单个 job 发布一次，
+  # 避免多个 matrix job 并发操作同一 release 导致 asset 删除 404
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
