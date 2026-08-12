@@ -53,8 +53,8 @@ type Task struct {
 // Config 运行时配置（全部来自数据库与命令行参数，无配置文件）
 type Config struct {
 	Server struct {
-		Port     int    // 命令行 -port
-		Username string // 固定 admin
+		Port     int    `json:"-"` // 命令行 -port
+		Username string `json:"-"` // 固定 admin
 	} `json:"-"`
 
 	STRM     STRMConfig               `json:"strm"`

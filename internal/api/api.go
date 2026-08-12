@@ -74,6 +74,8 @@ func (s *Server) Register(r *gin.Engine) {
 		api.POST("/tasks/run_all", s.runAll)
 		api.GET("/tasks/status", s.taskStatus)
 		api.POST("/tasks/:name/strm_replace", s.strmReplace)
+		api.POST("/tasks/:name/overwrite", s.overwriteTask)
+		api.POST("/tasks/:name/clear", s.clearTaskDir)
 		// 插件
 		api.GET("/plugins", s.listPlugins)
 		api.PUT("/plugins/:id", s.updatePlugin)
@@ -81,12 +83,10 @@ func (s *Server) Register(r *gin.Engine) {
 		api.GET("/webhook/info", s.webhookInfo)
 		api.PUT("/webhook", s.putWebhook)
 		api.POST("/webhook/regenerate", s.regenerateWebhook)
-		// 运行历史 / 统计 / 审计
+		// 运行历史 / 审计
 		api.GET("/runs", s.recentRuns)
 		api.GET("/runs/:id/log", s.runLog)
 		api.GET("/tasks/:name/history", s.taskHistory)
-		api.GET("/stats/daily", s.statsDaily)
-		api.GET("/stats/tasks", s.statsTasks)
 		api.GET("/audit", s.recentAudits)
 	}
 }
@@ -168,40 +168,6 @@ func (s *Server) taskHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, list)
 }
 
-// ============ 统计 ============
-
-// statsDaily 按天聚合（近 days 天）
-func (s *Server) statsDaily(c *gin.Context) {
-	if s.db == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
-		return
-	}
-	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
-	if days < 1 || days > 365 {
-		days = 30
-	}
-	list, err := s.db.DailyStats(days)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, list)
-}
-
-// statsTasks 任务汇总
-func (s *Server) statsTasks(c *gin.Context) {
-	if s.db == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
-		return
-	}
-	list, err := s.db.TaskTotals()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, list)
-}
-
 // ============ 认证 ============
 
 func (s *Server) login(c *gin.Context) {
@@ -213,14 +179,15 @@ func (s *Server) login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	// 单用户，固定 admin
+	// 单用户，固定 admin（审计记录来源 IP，便于发现暴力尝试）
+	clientIP := c.ClientIP()
 	if req.Username != "" && req.Username != "admin" {
-		s.audit(req.Username, "login_failed", "", "")
+		s.audit(req.Username, "login_failed", clientIP, "")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "账号或密码错误"})
 		return
 	}
 	if s.db == nil || !s.db.VerifyPassword(req.Password) {
-		s.audit("admin", "login_failed", "", "")
+		s.audit("admin", "login_failed", clientIP, "")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "账号或密码错误"})
 		return
 	}
@@ -268,18 +235,26 @@ func (s *Server) logout(c *gin.Context) {
 	s.mu.Lock()
 	delete(s.tokens, tok)
 	s.mu.Unlock()
-	s.audit("", "logout", "", "")
+	s.audit("admin", "logout", "", "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// auth 认证中间件
+// auth 认证中间件（顺带清理过期 token，防 map 无限增长）
 func (s *Server) auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tok := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		now := time.Now()
 		s.mu.Lock()
+		if len(s.tokens) > 100 { // 低频全量清理，避免每次请求遍历
+			for k, exp := range s.tokens {
+				if now.After(exp) {
+					delete(s.tokens, k)
+				}
+			}
+		}
 		exp, ok := s.tokens[tok]
 		s.mu.Unlock()
-		if !ok || time.Now().After(exp) {
+		if !ok || now.After(exp) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
 			c.Abort()
 			return
@@ -319,7 +294,11 @@ func (s *Server) putSettings(c *gin.Context) {
 // ============ 存储 ============
 
 func (s *Server) listStorages(c *gin.Context) {
-	c.JSON(http.StatusOK, s.cfg.Storages)
+	storages := s.cfg.Storages
+	if storages == nil {
+		storages = []config.Storage{}
+	}
+	c.JSON(http.StatusOK, storages)
 }
 
 func (s *Server) addStorage(c *gin.Context) {
@@ -625,6 +604,16 @@ func (s *Server) strmReplace(c *gin.Context) {
 	}
 	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
 	s.audit("", "strm_replace", name, req.FindText+" → "+req.ReplaceText)
+	var regexErr error
+	if req.RegexMode {
+		if _, err := regexp.Compile(req.FindText); err != nil {
+			regexErr = err
+		}
+	}
+	if regexErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "正则表达式无效: " + regexErr.Error()})
+		return
+	}
 	count := 0
 	_ = filepath.Walk(taskDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".strm") {
@@ -636,19 +625,71 @@ func (s *Server) strmReplace(c *gin.Context) {
 		}
 		content := string(data)
 		if req.RegexMode {
-			re, err := regexp.Compile(req.FindText)
-			if err != nil {
-				return nil
-			}
-			content = re.ReplaceAllString(content, req.ReplaceText)
+			content = regexp.MustCompile(req.FindText).ReplaceAllString(content, req.ReplaceText)
 		} else {
 			content = strings.ReplaceAll(content, req.FindText, req.ReplaceText)
 		}
-		_ = os.WriteFile(path, []byte(content), 0o644)
-		count++
+		if content != string(data) { // 只统计实际发生替换的文件
+			_ = os.WriteFile(path, []byte(content), 0o644)
+			count++
+		}
 		return nil
 	})
 	c.JSON(http.StatusOK, gin.H{"ok": true, "count": count})
+}
+
+// overwriteTask 全量覆写：清空任务目录后重新生成（仿原版任务工具）
+func (s *Server) overwriteTask(c *gin.Context) {
+	name := c.Param("name")
+	if !s.taskExists(name) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+		return
+	}
+	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
+	if err := os.RemoveAll(taskDir); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.mgr.Run(name); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	s.audit("", "task_overwrite", name, "")
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// clearTaskDir 一键清除：删除任务目录下所有文件（仿原版任务工具）
+func (s *Server) clearTaskDir(c *gin.Context) {
+	name := c.Param("name")
+	if !s.taskExists(name) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+		return
+	}
+	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
+	if err := os.RemoveAll(taskDir); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	s.audit("", "task_clear", name, "")
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// taskExists 任务是否存在
+func (s *Server) taskExists(name string) bool {
+	for i := range s.cfg.Tasks {
+		if s.cfg.Tasks[i].Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ============ 插件 ============
@@ -685,9 +726,6 @@ func (s *Server) updatePlugin(c *gin.Context) {
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
-	}
-	if s.cfg.Plugins == nil {
-		s.cfg.Plugins = map[string]config.PluginConfig{}
 	}
 	if s.cfg.Plugins == nil {
 		s.cfg.Plugins = map[string]config.PluginConfig{}

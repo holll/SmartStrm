@@ -3,209 +3,415 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300a2e9'/%3E%3Ctext x='32' y='42' font-family='Arial' font-size='28' font-weight='bold' fill='white' text-anchor='middle'%3ESS%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/css/bootstrap.min.css">
+<link rel="stylesheet" href="/static/css/bootstrap-icons.min.css">
 <link rel="stylesheet" href="/style.css">
 <title>SmartStrm-Go</title>
-
 </head>
 <body>
 
+<!-- 移动端侧边栏开关 -->
+<button class="top-nav-toggle" id="sidebarToggle" aria-label="打开菜单" onclick="toggleSidebar()"><i class="bi bi-list"></i></button>
+
+<!-- LOGIN -->
 <div id="login" style="display:none">
-  <div class="box">
-    <h2 style="margin-bottom:16px">SmartStrm-Go 登录</h2>
-    <div class="form-row"><label>账号</label><input type="text" value="admin" disabled style="background:#f3f4f6"></div>
-    <div class="form-row"><label for="loginPass">密码</label><input type="password" id="loginPass" name="password" autocomplete="current-password"></div>
-    <button class="btn" id="loginBtn" onclick="doLogin()" style="width:100%">登录</button>
-    <div id="loginErr" role="alert" style="color:var(--red);font-size:13px;margin-top:8px"></div>
+  <div class="login-container">
+    <div class="login-card">
+      <div class="login-header">
+        <p><span class="logo-icon"><i class="bi bi-film"></i></span></p>
+        <h1 class="h3 fw-bold mb-0">SmartStrm-Go</h1>
+        <p class="text-muted mt-2 mb-0">STRM 媒体文件管理工具</p>
+      </div>
+      <div class="login-body">
+        <form id="loginForm" onsubmit="event.preventDefault(); doLogin();">
+          <div class="form-floating mb-3">
+            <input type="text" class="form-control" id="loginUser" value="admin" disabled>
+            <label for="loginUser">用户名</label>
+          </div>
+          <div class="form-floating mb-3">
+            <input type="password" class="form-control" id="loginPass" placeholder="密码" autocomplete="current-password">
+            <label for="loginPass">密码</label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-login" id="loginBtn"><i class="bi bi-box-arrow-in-right me-1"></i>登录</button>
+        </form>
+        <div id="loginErr" role="alert" class="text-danger small mt-2"></div>
+      </div>
+    </div>
   </div>
 </div>
 
+<!-- APP -->
 <div id="app" style="display:none">
-<header>
-  <h1>SmartStrm-Go</h1>
-  <nav>
-    <button id="nav-tasks" class="active" onclick="showPage('tasks')">任务管理</button>
-    <button id="nav-storages" onclick="showPage('storages')">存储管理</button>
-    <button id="nav-browse" onclick="showPage('browse')">存储浏览</button>
-    <button id="nav-plugins" onclick="showPage('plugins')">插件管理</button>
-    <button id="nav-stats" onclick="showPage('stats')">统计报表</button>
-    <button id="nav-audit" onclick="showPage('audit')">审计日志</button>
-    <button id="nav-settings" onclick="showPage('settings')">系统设置</button>
-  </nav>
-  <span style="flex:1"></span>
-  <button style="background:none;border:none;color:var(--header-fg);cursor:pointer;font-size:13px;font-family:inherit;padding:6px 10px;border-radius:6px" onclick="doLogout()">退出</button>
-</header>
-<main>
-  <!-- 任务管理 -->
-  <div id="page-tasks">
-    <div class="card">
-      <div class="card-head"><h2>任务管理</h2><div><button class="btn green" onclick="runAll()">运行所有</button><button class="btn" onclick="openTask()">添加任务</button></div></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>任务名</th><th>存储</th><th>路径</th><th>定时</th><th>下次运行</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody id="taskRows"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>运行记录</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>生成</th><th>复制</th><th>清理</th><th>跳过</th><th>错误</th></tr></thead>
-          <tbody id="statusRows" aria-live="polite"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>任务日志 <span id="logTaskName" class="tag off" style="font-weight:400">未选择</span></h2></div>
-      <div id="taskLog" class="mono" style="background:#0f172a;color:#d1d5db;border-radius:6px;padding:10px;height:260px;overflow-y:auto;white-space:pre-wrap;word-break:break-all" aria-live="polite"></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>运行历史 <span class="tip">最近 50 次（持久化，重启不丢失）</span></h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>#</th><th>任务</th><th>开始</th><th>耗时</th><th>状态</th><th>生成</th><th>复制</th><th>清理</th><th>跳过</th><th>错误</th><th>操作</th></tr></thead>
-          <tbody id="historyRows"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
 
-  <!-- 存储管理 -->
-  <div id="page-storages" style="display:none">
-    <div class="card">
-      <div class="card-head"><h2>存储管理</h2><button class="btn" onclick="openStorage()">添加存储</button></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>存储名</th><th>驱动</th><th>地址</th><th>操作</th></tr></thead>
-          <tbody id="storageRows"></tbody>
-        </table>
-      </div>
+  <!-- SIDEBAR -->
+  <header class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-brand"><span class="logo-icon-sm"><i class="bi bi-film"></i></span>SmartStrm-Go</div>
     </div>
-  </div>
+    <nav class="nav flex-column sidebar-nav">
+      <button id="nav-overview" class="nav-link active" aria-current="page" onclick="showPage('overview')"><i class="bi bi-grid"></i> 总览</button>
+      <button id="nav-tasks"    class="nav-link" onclick="showPage('tasks')"><i class="bi bi-list-task"></i> 任务管理</button>
+      <button id="nav-storages" class="nav-link" onclick="showPage('storages')"><i class="bi bi-hdd-network"></i> 存储管理</button>
+      <button id="nav-browse"   class="nav-link" onclick="showPage('browse')"><i class="bi bi-folder2-open"></i> 存储浏览</button>
+      <button id="nav-plugins"  class="nav-link" onclick="showPage('plugins')"><i class="bi bi-plug"></i> 插件管理</button>
+      <button id="nav-audit"    class="nav-link" onclick="showPage('audit')"><i class="bi bi-journal-check"></i> 审计日志</button>
+      <button id="nav-settings" class="nav-link" onclick="showPage('settings')"><i class="bi bi-gear"></i> 系统设置</button>
+    </nav>
+    <div class="sidebar-footer">
+      <p class="text-muted small mb-3 text-center">SmartStrm-Go <span class="badge rounded-pill text-bg-light border">Go</span></p>
+      <button class="btn btn-outline-danger w-100" onclick="doLogout()"><i class="bi bi-box-arrow-right me-2"></i>退出</button>
+    </div>
+  </header>
 
-  <!-- 存储浏览 -->
-  <div id="page-browse" style="display:none">
-    <div class="card">
-      <div class="card-head">
-        <h2 id="browseTitle">存储浏览</h2>
-        <div>
-          <select id="browseStorage" style="width:220px" onchange="browseChangeStorage()"></select>
-          <button class="btn green" id="browsePickBtn" style="display:none" onclick="browsePickPath()">选择此路径</button>
+  <!-- MAIN -->
+  <main class="main-content">
+    <div class="content-wrapper">
+
+    <!-- 总览 -->
+    <div id="page-overview">
+      <div class="stat-grid">
+        <div class="stat-card" id="ov-tasks">
+          <div class="stat-label"><i class="bi bi-list-task me-1"></i>任务</div>
+          <div class="stat-value">–</div>
+          <div class="stat-sub" id="ov-tasks-sub"></div>
+        </div>
+        <div class="stat-card" id="ov-storages">
+          <div class="stat-label"><i class="bi bi-hdd-network me-1"></i>存储</div>
+          <div class="stat-value">–</div>
+          <div class="stat-sub"></div>
+        </div>
+        <div class="stat-card" id="ov-plugins">
+          <div class="stat-label"><i class="bi bi-plug me-1"></i>启用插件</div>
+          <div class="stat-value"><span id="ov-plugins-a">0</span><span class="text-muted"> / </span><span id="ov-plugins-b">–</span></div>
+          <div class="stat-sub"></div>
+        </div>
+        <div class="stat-card" id="ov-gen">
+          <div class="stat-label"><i class="bi bi-file-earmark-play me-1"></i>今日生成</div>
+          <div class="stat-value">–</div>
+          <div class="stat-sub"></div>
         </div>
       </div>
-      <div class="tip" id="browsePath" style="margin-bottom:8px"></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>名称</th><th>大小</th><th>修改时间</th></tr></thead>
-          <tbody id="browseRows"></tbody>
-        </table>
+      <div class="card">
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-activity me-2 text-primary"></i>任务状态速览</h5>
+          <div><button class="btn btn-primary btn-sm me-2" onclick="runAll()"><i class="bi bi-play-fill"></i>运行全部</button><button class="btn btn-primary btn-sm" onclick="openTask()"><i class="bi bi-plus"></i>添加任务</button></div>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th>任务</th><th>状态</th><th class="num">开始</th><th class="num">结束</th><th class="num">生成</th><th class="num">复制</th><th class="num">清理</th><th class="num">跳过</th><th class="num">下次运行</th><th>错误</th></tr></thead>
+            <tbody id="ovStatusRows" aria-live="polite"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-clock-history me-2 text-primary"></i>最近运行</h5>
+          <button class="btn btn-outline-secondary btn-sm" onclick="showPage('tasks')">查看全部</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th class="num">#</th><th>任务</th><th class="num">开始</th><th class="num">耗时</th><th>状态</th><th class="num">生成</th><th class="num">复制</th><th class="num">清理</th><th class="num">跳过</th></tr></thead>
+            <tbody id="ovRunRows"></tbody>
+          </table>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- 插件管理 -->
-  <div id="page-plugins" style="display:none">
-    <div class="card">
-      <h2>插件管理</h2>
-      <p class="tip" style="margin-bottom:12px">全局插件配置，作用于所有任务；也可在任务编辑中为单个任务覆盖配置</p>
-      <div id="pluginList"></div>
-    </div>
-  </div>
-
-  <!-- 统计报表 -->
-  <div id="page-stats" style="display:none">
-    <div class="card">
-      <div class="card-head"><h2>近 30 天运行趋势 <span class="tip">每日运行次数 / 生成量</span></h2>
-        <select id="statsDays" style="width:140px" onchange="loadStats()">
-          <option value="7">近 7 天</option>
-          <option value="30" selected>近 30 天</option>
-          <option value="90">近 90 天</option>
-        </select></div>
-      <div id="trendChart" style="display:flex;align-items:flex-end;gap:3px;height:180px;padding:8px 0"></div>
-    </div>
-    <div class="card">
-      <h2>任务汇总</h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>任务</th><th>总运行</th><th>成功</th><th>失败</th><th>成功率</th><th>总生成</th></tr></thead>
-          <tbody id="taskTotalsRows"></tbody>
-        </table>
+    <!-- 任务管理 -->
+    <div id="page-tasks" style="display:none">
+      <div class="card">
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-list-task me-2 text-primary"></i>任务管理</h5>
+          <div><button class="btn btn-primary btn-sm me-2" onclick="runAll()"><i class="bi bi-play-fill"></i>运行所有</button><button class="btn btn-primary btn-sm" onclick="openTask()"><i class="bi bi-plus"></i>添加任务</button></div>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th>任务名</th><th>存储</th><th>路径</th><th>定时</th><th class="num">下次运行</th><th>操作</th></tr></thead>
+            <tbody id="taskRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-activity me-2 text-primary"></i>运行记录</h5></div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th>任务</th><th>状态</th><th class="num">开始</th><th class="num">结束</th><th class="num">生成</th><th class="num">复制</th><th class="num">清理</th><th class="num">跳过</th><th>错误</th></tr></thead>
+            <tbody id="statusRows" aria-live="polite"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-clock-history me-2 text-primary"></i>运行历史 <span class="text-muted small fw-normal">最近 50 次，持久化</span></h5></div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th class="num">#</th><th>任务</th><th class="num">开始</th><th class="num">耗时</th><th>状态</th><th class="num">生成</th><th class="num">复制</th><th class="num">清理</th><th class="num">跳过</th><th>错误</th><th>操作</th></tr></thead>
+            <tbody id="historyRows"></tbody>
+          </table>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- 审计日志 -->
-  <div id="page-audit" style="display:none">
-    <div class="card">
-      <div class="card-head"><h2>审计日志 <span class="tip">登录 / 配置变更 / 运行操作 / Webhook 记录</span></h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
-          <tbody id="auditRows"></tbody>
-        </table>
+    <!-- 存储管理 -->
+    <div id="page-storages" style="display:none">
+      <div class="card">
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-hdd-network me-2 text-primary"></i>存储管理</h5>
+          <button class="btn btn-primary btn-sm" onclick="openStorage()"><i class="bi bi-plus"></i>添加存储</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th>存储名</th><th>驱动</th><th>地址</th><th>操作</th></tr></thead>
+            <tbody id="storageRows"></tbody>
+          </table>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- 系统设置 -->
-  <div id="page-settings" style="display:none">
-    <div class="card">
-      <h2>STRM 设置</h2>
-      <div class="form-row"><label for="s-mediaExt">媒体文件后缀（逗号分隔，这些文件生成 STRM）</label><input type="text" id="s-mediaExt"></div>
-      <div class="form-row"><label for="s-mediaSize">媒体文件大小阈值（MB，大于此才生成）</label><input type="number" id="s-mediaSize" min="0"></div>
-      <div class="form-row"><label for="s-copyExt">复制到本地的文件后缀（逗号分隔，刮削文件）</label><input type="text" id="s-copyExt"></div>
-      <div class="form-row"><label for="s-saveDir">生成根目录（任务目录为 根目录/任务名）</label><input type="text" id="s-saveDir"></div>
-      <div class="form-row"><label for="s-strmBase">STRM 直链前缀（写入 STRM 的 URL 前缀，须能被 Emby 访问到；留空使用存储自身地址）</label><input type="text" id="s-strmBase" placeholder="如 http://alist.example.com…"></div>
-      <div class="check-row"><input type="checkbox" id="s-urlEncode"><label for="s-urlEncode">对 STRM 进行 URL 编码</label></div>
-      <div class="form-row"><label for="s-genType">生成类型</label>
-        <select id="s-genType">
-          <option value="path">路径兼容模式（{base}/d/路径，兼容性好）</option>
-          <option value="fid">文件编号模式（调用 fs/get 获取直链）</option>
-        </select>
+    <!-- 存储浏览 -->
+    <div id="page-browse" style="display:none">
+      <div class="card browser-card">
+        <div class="card-head" style="border-radius:10px 10px 0 0">
+          <h5 class="mb-0"><i class="bi bi-folder2-open me-2 text-primary"></i><span id="browseTitle">存储浏览</span></h5>
+        </div>
+        <div class="card-body">
+          <div class="input-group mb-3">
+            <span class="input-group-text"><i class="bi bi-hdd-network"></i></span>
+            <select id="browseStorage" class="form-select" style="max-width:200px" onchange="browseChangeStorage()"></select>
+            <input type="text" class="form-control" id="browsePathInput" placeholder="/" spellcheck="false" title="路径（回车跳转）">
+            <button class="btn btn-outline-secondary" type="button" title="刷新" onclick="loadBrowse()"><i class="bi bi-arrow-clockwise"></i></button>
+            <button class="btn btn-outline-secondary border-start-0" type="button" title="复制路径" onclick="copyPath()"><i class="bi bi-clipboard"></i></button>
+            <button class="btn btn-success" id="browsePickBtn" style="display:none" onclick="browsePickPath()"><i class="bi bi-check-lg"></i>选择此路径</button>
+          </div>
+          <div class="d-flex gap-2 mb-3">
+            <div class="flex-grow-1">
+              <div class="input-group input-group-sm">
+                <span class="input-group-text border-dark bg-transparent"><i class="bi bi-search"></i></span>
+                <input type="text" class="form-control border-dark" id="browseFilter" placeholder="搜索当前目录...">
+                <button class="btn btn-danger" id="browseFilterClear" style="display:none" onclick="clearBrowseFilter()"><i class="bi bi-x"></i></button>
+              </div>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:20rem">名称</th><th class="num" style="width:6rem">大小</th><th class="num" style="width:10rem">修改时间</th></tr></thead>
+              <tbody id="browseRows"></tbody>
+            </table>
+          </div>
+          <div class="pt-2 border-top"><small class="opacity-50" id="browseCount"></small></div>
+        </div>
       </div>
-      <button class="btn" id="saveSettingsBtn" onclick="saveSettings()">保存设置</button>
     </div>
-    <div class="card">
-      <h2>修改密码</h2>
-      <div class="form-row"><label for="cp-old">旧密码</label><input type="password" id="cp-old" autocomplete="current-password"></div>
-      <div class="form-row"><label for="cp-new">新密码（至少 6 位）</label><input type="password" id="cp-new" autocomplete="new-password"></div>
-      <div class="form-row"><label for="cp-confirm">确认新密码</label><input type="password" id="cp-confirm" autocomplete="new-password"></div>
-      <button class="btn" id="cpBtn" onclick="changePassword()">修改密码</button>
-      <div id="cpMsg" role="alert" style="font-size:13px;margin-top:8px"></div>
+
+    <!-- 插件管理 -->
+    <div id="page-plugins" style="display:none">
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-plug me-2 text-primary"></i>插件管理 <span class="text-muted small fw-normal">此处总开关作用于全局，也可每个任务独立配置</span></h5></div>
+        <div id="pluginList"></div>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-head"><h2>Webhook</h2><button class="btn amber" id="regenerateWhBtn" onclick="regenerateWebhook()">重新生成地址</button></div>
-      <p class="tip" style="margin-bottom:12px">Webhook 地址含随机 token，无鉴权头；如泄露请「重新生成地址」，旧地址立即失效（需同步更新 Emby/QAS/CloudSaver 中的配置）</p>
-      <div id="webhookInfo" style="font-size:13px"></div>
-      <h4 style="margin:16px 0 8px">Emby 删除同步</h4>
-      <div class="check-row"><input type="checkbox" id="wh-embyEnabled"><label for="wh-embyEnabled">启用 Emby 删除同步（Emby 删片 → 联动删除远端文件）</label></div>
-      <div class="form-row"><label for="wh-strmInEmby">STRM 目录在 Emby 内的路径（前缀校验）</label><input type="text" id="wh-strmInEmby" placeholder="/strm"></div>
-      <div class="form-row"><label for="wh-pathMap">对应的存储内路径前缀</label><input type="text" id="wh-pathMap" placeholder="/115"></div>
-      <div class="form-row"><label for="wh-storage">删除操作使用的存储</label><select id="wh-storage"></select></div>
-      <div class="form-row"><label for="wh-allowed">只允许删除的路径前缀（逗号分隔，防误删）</label><input type="text" id="wh-allowed" placeholder="/115/AV,/115/FC2"></div>
-      <button class="btn" id="saveWhBtn" onclick="saveWebhook()">保存 Webhook 配置</button>
+
+    <!-- 审计日志 -->
+    <div id="page-audit" style="display:none">
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-journal-check me-2 text-primary"></i>审计日志 <span class="text-muted small fw-normal">登录 / 配置变更 / 运行操作 / Webhook</span></h5></div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th class="num">时间</th><th>用户</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
+            <tbody id="auditRows"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
-  </div>
-</main>
+
+    <!-- 系统设置 -->
+    <div id="page-settings" style="display:none">
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-gear me-2 text-primary"></i>STRM 设置</h5></div>
+        <h6 class="fw-bold mb-3"><i class="bi bi-folder-plus me-2"></i>扫描设置</h6>
+        <div class="form-row"><label for="s-mediaExt">媒体文件后缀</label><input type="text" class="form-control" id="s-mediaExt" placeholder="mp4,mkv"><div class="tip">多个后缀用逗号分隔，这些文件将生成 STRM</div></div>
+        <div class="form-row"><label for="s-mediaSize">媒体文件大小阈值</label><div class="input-group"><span class="input-group-text">≥</span><input type="number" class="form-control" id="s-mediaSize" min="0"><span class="input-group-text">MB</span></div><div class="tip">大于此大小的媒体文件才会生成 STRM</div></div>
+        <div class="form-row"><label for="s-copyExt">复制到本地的文件后缀</label><input type="text" class="form-control" id="s-copyExt" placeholder="jpg,png,nfo"><div class="tip">多个后缀用逗号分隔，这些文件将直接复制(下载)到生成目录</div></div>
+        <h6 class="fw-bold mb-3 mt-4"><i class="bi bi-file-earmark-play me-2"></i>生成设置</h6>
+        <div class="form-row"><label for="s-saveDir">生成根目录</label><input type="text" class="form-control" id="s-saveDir"><div class="tip">任务目录为 根目录/任务名</div></div>
+        <div class="form-row"><label for="s-strmBase">STRM 直链前缀</label><input type="text" class="form-control" id="s-strmBase" placeholder="如 http://alist.example.com…"><div class="tip">写入 STRM 的 URL 前缀，须能被 Emby 访问到；留空使用存储自身地址</div></div>
+        <div class="form-row"><label for="s-genType">云盘类存储生成类型</label>
+          <select class="form-select" id="s-genType" onchange="syncGenTypeTip()">
+            <option value="fid">文件编号模式</option>
+            <option value="path">路径兼容模式</option>
+          </select>
+          <div class="tip" id="s-genType-tip">以文件编号替代路径写入 STRM 内容，可稍微提高起播速度（推荐）</div>
+        </div>
+        <div class="check-row"><input type="checkbox" class="form-check-input me-2" id="s-urlEncode"><label class="form-check-label" for="s-urlEncode">对 STRM 进行 URL 编码</label><div class="tip ms-1">以增强非英文路径的兼容性，你可能会看到像 <code>%E5%A6%99</code> 的路径，并非乱码</div></div>
+        <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSettings()"><i class="bi bi-check-lg me-1"></i>保存设置</button>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-shield-lock me-2 text-primary"></i>修改密码</h5></div>
+        <div class="form-row"><label for="cp-old">旧密码</label><input type="password" class="form-control" id="cp-old" autocomplete="current-password"></div>
+        <div class="form-row"><label for="cp-new">新密码（至少 6 位）</label><input type="password" class="form-control" id="cp-new" autocomplete="new-password"></div>
+        <div class="form-row"><label for="cp-confirm">确认新密码</label><input type="password" class="form-control" id="cp-confirm" autocomplete="new-password"></div>
+        <button class="btn btn-primary" id="cpBtn" onclick="changePassword()"><i class="bi bi-key me-1"></i>修改密码</button>
+        <div id="cpMsg" role="alert" class="small mt-2"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-robot me-2 text-primary"></i>Webhook</h5></div>
+        <div class="mb-3">
+          <h6 class="fw-bold"><i class="bi bi-broadcast me-2"></i>Webhook 地址</h6>
+          <div class="input-group" id="webhookInfo"></div>
+          <div class="tip mt-1">以上链接含 token 信息，用于验证身份，请勿泄露；如泄露请重新生成，旧地址立即失效</div>
+        </div>
+        <hr class="text-secondary">
+        <div class="mb-3 alert alert-light">
+          <div class="alert-heading fw-bold mb-2"><i class="bi bi-card-checklist me-2"></i>当前支持</div>
+          <ul class="mb-0 small">
+            <li>运行一个任务：可仅触发任务路径下的子目录</li>
+            <li>联动 QAS / CloudSaver 触发任务：转存后触发 STRM 生成</li>
+            <li>Emby 媒体删除事件：同步删除远端存储中的文件</li>
+          </ul>
+        </div>
+        <div class="mb-3 px-3 py-2 border rounded">
+          <div class="d-flex justify-content-between align-items-center cursor-pointer" onclick="toggleCollapse('webhookDeleteSettings')">
+            <span><i class="bi bi-trash3 me-2"></i>Emby 删除同步设置</span><i class="bi bi-chevron-down" id="wh-chevron"></i>
+          </div>
+          <div class="collapse mt-2" id="webhookDeleteSettings">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" role="switch" id="wh-embyEnabled">
+              <label class="form-check-label" for="wh-embyEnabled">启用</label>
+            </div>
+            <div class="form-row"><label for="wh-strmInEmby">STRM 目录在 Emby 内的路径（前缀校验）</label><input type="text" class="form-control" id="wh-strmInEmby" placeholder="/strm"></div>
+            <div class="form-row"><label for="wh-pathMap">对应的存储内路径前缀</label><input type="text" class="form-control" id="wh-pathMap" placeholder="/115"></div>
+            <div class="form-row"><label for="wh-storage">删除操作使用的存储</label><select class="form-select" id="wh-storage"></select></div>
+            <div class="form-row"><label for="wh-allowed">只允许删除的路径前缀（逗号分隔，防误删）</label><input type="text" class="form-control" id="wh-allowed" placeholder="/115/AV,/115/FC2"></div>
+            <button class="btn btn-primary btn-sm" id="saveWhBtn" onclick="saveWebhook()"><i class="bi bi-check-lg me-1"></i>保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </div>
+  </main>
+</div>
 
 <!-- 任务对话框 -->
 <div class="dialog" id="taskDialog" role="dialog" aria-modal="true" aria-labelledby="taskDialogTitle">
-  <div class="dialog-box">
-    <h3 id="taskDialogTitle">添加任务</h3>
-    <div class="form-row"><label for="t-name">任务名称（唯一，生成的 STRM 在 {根目录}/任务名 下）</label><input type="text" id="t-name" spellcheck="false"></div>
-    <div class="form-row"><label for="t-storage">使用存储</label><select id="t-storage"></select></div>
-    <div class="form-row"><label for="t-path">扫描路径（存储中媒体文件路径）</label>
-      <div style="display:flex;gap:6px"><input type="text" id="t-path" placeholder="/115/FC2"><button class="btn gray" style="white-space:nowrap" onclick="browseForTask()">浏览…</button></div>
+  <div class="dialog-box modal-lg">
+    <div class="modal-header">
+      <h5 class="modal-title" id="taskDialogTitle">添加任务</h5>
+      <button type="button" class="btn-close" aria-label="关闭" onclick="closeDialog('taskDialog')"></button>
     </div>
-    <div class="form-row"><label for="t-cron">执行时间 Crontab（分 时 日 月 周，留空不定时）</label><input type="text" id="t-cron" placeholder="0 */4 * * *" spellcheck="false"></div>
-    <div class="check-row"><input type="checkbox" id="t-incremental" checked><label for="t-incremental">增量生成模式（关闭为同步生成，清理远端已不存在的文件）</label></div>
-    <div class="check-row"><input type="checkbox" id="t-dircheck" checked><label for="t-dircheck">目录时间检查（仅远端目录更新时扫描）</label></div>
-    <div class="check-row"><input type="checkbox" id="t-keepAsset"><label for="t-keepAsset">保留本地刮削的文件（同步模式下）</label></div>
-    <h4 style="margin:12px 0 8px">任务级插件覆盖（可选，覆盖全局插件配置）</h4>
-    <div id="t-plugins"></div>
-    <div style="margin-top:16px;text-align:right">
-      <button class="btn gray" onclick="closeDialog('taskDialog')">取消</button>
-      <button class="btn" id="saveTaskBtn" onclick="saveTask()">保存</button>
+    <div class="modal-body">
+      <div class="alert alert-info py-2">STRM 将保存在：<code id="taskSavePath">-</code></div>
+      <div class="mb-3">
+        <label class="form-label" for="t-name">任务名称</label>
+        <input type="text" class="form-control" id="t-name" placeholder="tv" spellcheck="false" required>
+        <div class="form-text">唯一值，修改已有的即为复制新建一个任务</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="t-storage">使用存储</label>
+        <select class="form-select" id="t-storage" required></select>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="t-path">扫描路径</label>
+        <div class="input-group">
+          <button class="btn btn-outline-secondary" type="button" title="上一级目录" onclick="taskPathUp()"><i class="bi bi-arrow-90deg-up"></i></button>
+          <input type="text" class="form-control" id="t-path" placeholder="/video/tv" spellcheck="false" required list="storagePath">
+        </div>
+        <div class="form-text">存储中媒体文件的路径</div>
+        <datalist id="storagePath"></datalist>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="t-cron">执行时间 (<a class="text-muted" href="https://tool.lu/crontab/" target="_blank" rel="noopener">Crontab</a>)</label>
+        <div class="input-group">
+          <input type="text" class="form-control" id="t-cron" placeholder="Never" spellcheck="false">
+          <button class="btn btn-outline-secondary" type="button" title="半夜随机时间" onclick="randomCron()"><i class="bi bi-dice-3"></i></button>
+          <button class="btn btn-outline-secondary border-start-0" type="button" title="清空" onclick="clearCron()"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="form-text">格式：<code>分 时 日 月 周</code>，如 <code>0 0 * * *</code> 表示每天凌晨，留空则不定时执行；建议不同任务间错开时间</div>
+      </div>
+      <div class="mb-3">
+        <div class="form-check form-switch">
+          <input type="checkbox" class="form-check-input" id="t-dircheck" checked>
+          <label class="form-check-label" for="t-dircheck">目录时间检查</label>
+        </div>
+        <div class="form-text">开启后仅当远程目录修改时间 &gt; 本地目录时才扫描子目录；<b>如文件更新后仍跳过扫描，请尝试取消本选项</b></div>
+      </div>
+      <div class="mb-3">
+        <div class="form-check form-switch">
+          <input type="checkbox" class="form-check-input" id="t-incremental" checked>
+          <label class="form-check-label" for="t-incremental">增量生成模式</label>
+        </div>
+        <div class="form-text" id="t-incremental-tip">使用增量生成，仅新增文件，不清理远端存储不存在的文件</div>
+      </div>
+      <div class="mb-3" id="t-keepAssetWrap" style="display:none">
+        <div class="form-check form-switch">
+          <input type="checkbox" class="form-check-input" id="t-keepAsset">
+          <label class="form-check-label" for="t-keepAsset">保留本地刮削的文件</label>
+        </div>
+        <div class="form-text">基于常见命名规则判断，并非完全准确，有可能会出现非期望的情况</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div class="me-auto">
+        <button class="btn btn-outline-dark me-2" type="button" onclick="openTaskTools()"><i class="bi bi-tools"></i> 工具</button>
+        <button class="btn btn-outline-dark" type="button" onclick="openTaskPlugins()"><i class="bi bi-plug"></i> 插件</button>
+      </div>
+      <button class="btn btn-secondary" onclick="closeDialog('taskDialog')">取消</button>
+      <button class="btn btn-primary" id="saveTaskBtn" onclick="saveTask()"><i class="bi bi-check-lg me-1"></i>保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 任务工具对话框 -->
+<div class="dialog" id="taskToolsModal" role="dialog" aria-modal="true" aria-labelledby="taskToolsTitle">
+  <div class="dialog-box">
+    <div class="modal-header">
+      <h5 class="modal-title" id="taskToolsTitle">任务工具</h5>
+      <button type="button" class="btn-close" aria-label="关闭" onclick="closeDialog('taskToolsModal')"></button>
+    </div>
+    <div class="modal-body">
+      <div class="border rounded p-2 mb-2">
+        <div class="d-flex justify-content-between align-items-center cursor-pointer" onclick="toggleCollapse('contentReplaceForm')">
+          <span><i class="bi bi-pencil-square me-2"></i>STRM 内容替换</span><i class="bi bi-chevron-down" id="contentReplaceChevron"></i>
+        </div>
+        <div class="collapse show m-2" id="contentReplaceForm">
+          <div class="mb-2"><label class="form-label" for="tt-find">查找文本</label><input type="text" class="form-control form-control-sm" id="tt-find" placeholder="查找文本，支持正则" spellcheck="false" required></div>
+          <div class="mb-2"><label class="form-label" for="tt-replace">替换为</label><input type="text" class="form-control form-control-sm" id="tt-replace" placeholder="替换为" spellcheck="false"></div>
+          <button type="button" class="btn btn-primary btn-sm w-100 mt-2" onclick="taskReplaceAction()"><i class="bi bi-arrow-repeat me-1"></i>替换</button>
+        </div>
+      </div>
+      <div class="border rounded p-2 mb-2">
+        <div class="d-flex justify-content-between align-items-center cursor-pointer" onclick="toggleCollapse('overwriteTaskForm')">
+          <span><i class="bi bi-pen me-2"></i>全量覆写</span><i class="bi bi-chevron-down" id="overwriteTaskChevron"></i>
+        </div>
+        <div class="collapse show m-2 text-center" id="overwriteTaskForm">
+          <button type="button" class="btn btn-primary btn-sm w-100 mt-2" onclick="taskOverwriteAction()">全量覆写</button>
+          <div class="form-text mt-1">全量更新，强制覆写任务下的所有文件</div>
+        </div>
+      </div>
+      <div class="border rounded p-2 mb-2">
+        <div class="d-flex justify-content-between align-items-center cursor-pointer" onclick="toggleCollapse('clearTaskDirForm')">
+          <span><i class="bi bi-trash me-2"></i>一键清除</span><i class="bi bi-chevron-down" id="clearTaskDirChevron"></i>
+        </div>
+        <div class="collapse show m-2 text-center" id="clearTaskDirForm">
+          <button type="button" class="btn btn-danger btn-sm w-100 mt-2" onclick="taskClearAction()">一键清除</button>
+          <div class="form-text mt-1">清除任务下的所有文件</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 任务插件对话框 -->
+<div class="dialog" id="taskPluginModal" role="dialog" aria-modal="true" aria-labelledby="taskPluginTitle">
+  <div class="dialog-box">
+    <div class="modal-header">
+      <h5 class="modal-title" id="taskPluginTitle">任务插件</h5>
+      <button type="button" class="btn-close" aria-label="关闭" onclick="closeDialog('taskPluginModal')"></button>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-info py-2">关闭时使用全局插件配置，开启时使用独立配置。</div>
+      <div id="t-plugins"></div>
     </div>
   </div>
 </div>
@@ -213,16 +419,39 @@
 <!-- 存储对话框 -->
 <div class="dialog" id="storageDialog" role="dialog" aria-modal="true" aria-labelledby="storageDialogTitle">
   <div class="dialog-box">
-    <h3 id="storageDialogTitle">存储配置</h3>
-    <div class="form-row"><label for="st-name">存储名称（唯一）</label><input type="text" id="st-name" spellcheck="false"></div>
-    <div class="form-row"><label for="st-driver">驱动</label><select id="st-driver"><option value="openlist">OpenList / AList</option></select></div>
-    <div class="form-row"><label for="st-url">地址</label><input type="text" id="st-url" placeholder="https://alist.example.com" spellcheck="false"></div>
-    <div class="form-row"><label for="st-token">Token（OpenList API token）</label><input type="text" id="st-token" spellcheck="false"></div>
-    <div style="text-align:right"><button class="btn gray" onclick="closeDialog('storageDialog')">取消</button><button class="btn" id="saveStorageBtn" onclick="saveStorage()">保存</button></div>
+    <div class="modal-header">
+      <h5 class="modal-title" id="storageDialogTitle">存储配置</h5>
+      <button type="button" class="btn-close" onclick="closeDialog('storageDialog')"></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row"><label for="st-name">存储名称（唯一）</label><input type="text" class="form-control" id="st-name" spellcheck="false"></div>
+      <div class="form-row"><label for="st-driver">驱动</label><select class="form-select" id="st-driver"><option value="openlist">OpenList / AList</option></select></div>
+      <div class="form-row"><label for="st-url">地址</label><input type="text" class="form-control" id="st-url" placeholder="https://alist.example.com" spellcheck="false"></div>
+      <div class="form-row"><label for="st-token">Token（OpenList API token）</label><input type="text" class="form-control" id="st-token" spellcheck="false"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeDialog('storageDialog')">取消</button>
+      <button class="btn btn-primary" id="saveStorageBtn" onclick="saveStorage()"><i class="bi bi-check-lg me-1"></i>保存</button>
+    </div>
   </div>
 </div>
 
+<!-- 任务日志对话框 -->
+<div class="dialog" id="taskLogModal" role="dialog" aria-modal="true" aria-labelledby="logModalTitle">
+  <div class="dialog-box modal-lg" style="position:relative">
+    <div class="modal-header">
+      <h5 class="modal-title" id="logModalTitle">任务日志</h5>
+      <button type="button" class="btn-close" aria-label="关闭" onclick="closeLogModal()"></button>
+    </div>
+    <div class="modal-body p-2">
+      <pre class="task-log" id="taskLog">日志为空</pre>
+    </div>
+    <button class="btn btn-danger btn-sm" id="logStopBtn" style="display:none;position:absolute;bottom:4rem;right:3rem" title="停止" onclick="stopTask(LOG_TASK)"><i class="bi bi-stop-fill"></i></button>
+  </div>
 </div>
+
+<!-- TOAST（顶部居中，仿原版） -->
+<div class="toast-container position-fixed top-0 start-50 translate-middle-x p-3"></div>
 
 <script src="/app.js"></script>
 </body>

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -10,7 +11,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -89,9 +93,24 @@ func main() {
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("SmartStrm-Go 启动，监听 %s（管理页 http://localhost%s）", addr, addr)
 	log.Printf("Webhook 触发地址: /webhook/%s", cfg.Webhook.Token)
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("服务启动失败: %v", err)
+
+	// 优雅关机：收到 SIGINT/SIGTERM 后停止接收新请求，等待当前请求完成
+	srv := &http.Server{Addr: addr, Handler: r}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("服务启动失败: %v", err)
+		}
+	}()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	log.Println("收到退出信号，正在关闭…")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("关闭超时: %v", err)
 	}
+	log.Println("已退出")
 }
 
 // initAdmin 账号初始化（固定 admin，仅首次创建）
@@ -178,27 +197,46 @@ func buildConfig(database *db.DB, port int) *config.Config {
 	return cfg
 }
 
-// registerWeb 注册内置管理页面（逐文件注册 + NoRoute 兜底返回 index.html）
+// registerWeb 注册内置管理页面（递归注册静态文件 + NoRoute 兜底返回 index.html）
 func registerWeb(r *gin.Engine, webFS embed.FS) {
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		log.Fatalf("读取内置页面失败: %v", err)
 	}
-	entries, _ := fs.ReadDir(sub, ".")
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		data, err := fs.ReadFile(sub, name)
+	var walk func(dir fs.ReadDirFS, prefix string) error
+	walk = func(dir fs.ReadDirFS, prefix string) error {
+		entries, err := fs.ReadDir(dir, ".")
 		if err != nil {
-			continue
+			return err
 		}
-		fileData := data
-		r.GET("/"+name, func(c *gin.Context) {
-			c.Data(http.StatusOK, contentType(name), fileData)
-		})
+		for _, e := range entries {
+			rel := e.Name()
+			if prefix != "" {
+				rel = prefix + "/" + e.Name()
+			}
+			if e.IsDir() {
+				d, err := fs.Sub(dir, e.Name())
+				if err != nil {
+					continue
+				}
+				_ = walk(d.(fs.ReadDirFS), rel)
+				continue
+			}
+			data, err := fs.ReadFile(sub, rel)
+			if err != nil {
+				continue
+			}
+			fileData := data
+			route := "/" + rel
+			r.GET(route, func(c *gin.Context) {
+				// 静态资源禁用缓存：升级后立即生效，避免浏览器使用旧版本
+				c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+				c.Data(http.StatusOK, contentType(rel), fileData)
+			})
+		}
+		return nil
 	}
+	_ = walk(sub.(fs.ReadDirFS), "")
 	// 其他非 API 路径返回管理页（SPA 兜底）
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api") || strings.HasPrefix(c.Request.URL.Path, "/webhook") {
@@ -218,6 +256,12 @@ func contentType(name string) string {
 		return "application/javascript"
 	case strings.HasSuffix(name, ".css"):
 		return "text/css"
+	case strings.HasSuffix(name, ".woff2"):
+		return "font/woff2"
+	case strings.HasSuffix(name, ".woff"):
+		return "font/woff"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
 	default:
 		return "application/octet-stream"
 	}

@@ -39,11 +39,28 @@ func (h *Handler) audit(user, action, target, detail string) {
 }
 
 // Register 注册路由
+// 任务触发与 Emby 删除同步共用 /webhook/{token}，按请求体内容自动分派；
+// /webhook/emby/{token} 保留兼容旧地址（已在 Emby 中配置的无需改动）
 func (h *Handler) Register(r *gin.Engine) {
-	// 任务触发：POST /webhook/{token}，body 含 strmtask 字段
-	r.POST("/webhook/:token", h.triggerHandler)
-	// Emby 删除同步：POST /webhook/emby/{token}
-	r.POST("/webhook/emby/:token", h.embyDeleteHandler)
+	r.POST("/webhook/:token", h.dispatch)
+	r.POST("/webhook/emby/:token", h.dispatch)
+}
+
+// dispatch 统一入口：按请求体区分 Emby 通知与任务触发
+func (h *Handler) dispatch(c *gin.Context) {
+	if c.Param("token") != h.cfg.Webhook.Token {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 token"})
+		return
+	}
+	// 限制请求体大小（1MB），防超大 body 耗尽内存
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+	body, _ := io.ReadAll(c.Request.Body)
+	var wh embyWebhook
+	if err := json.Unmarshal(body, &wh); err == nil && wh.Event != "" {
+		h.embyDelete(c, body, wh)
+		return
+	}
+	h.trigger(c, body)
 }
 
 // triggerReq 任务触发请求
@@ -52,13 +69,8 @@ type triggerReq struct {
 	Task    string `json:"task"`
 }
 
-// triggerHandler 外部工具（QAS/CloudSaver/脚本）转存后触发任务
-func (h *Handler) triggerHandler(c *gin.Context) {
-	if c.Param("token") != h.cfg.Webhook.Token {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 token"})
-		return
-	}
-	body, _ := io.ReadAll(c.Request.Body)
+// trigger 外部工具（QAS/CloudSaver/脚本）转存后触发任务
+func (h *Handler) trigger(c *gin.Context, body []byte) {
 	var req triggerReq
 	if err := json.Unmarshal(body, &req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "JSON 解析失败"})
@@ -100,26 +112,15 @@ type embyWebhook struct {
 	} `json:"Item"`
 }
 
-// embyDeleteHandler Emby 删除通知 → 删除远端存储文件
-func (h *Handler) embyDeleteHandler(c *gin.Context) {
-	if c.Param("token") != h.cfg.Webhook.Token {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 token"})
-		return
-	}
+// embyDelete Emby 删除通知 → 删除远端存储文件
+func (h *Handler) embyDelete(c *gin.Context, body []byte, wh embyWebhook) {
 	es := h.cfg.Webhook.EmbyDeleteSync
 	if !es.Enabled {
 		c.String(http.StatusOK, "ignored: emby 删除同步未启用")
 		return
 	}
 
-	body, _ := io.ReadAll(c.Request.Body)
 	log.Printf("Emby webhook: %s", string(body))
-	var wh embyWebhook
-	if err := json.Unmarshal(body, &wh); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "JSON 解析失败"})
-		return
-	}
-
 	switch wh.Event {
 	case "item.deleted", "ItemDeleted", "library.deleted":
 	default:

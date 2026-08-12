@@ -177,6 +177,7 @@ func (m *Manager) Run(name string) error {
 	// 日志跨运行累积（环形淘汰最旧），每次运行以分隔行开始
 	logbuf.Logf("INFO", "==================================================")
 	logbuf.Logf("INFO", "任务 %s 开始运行", name)
+	startSeq := logbuf.LastSeq() // 本次运行起始 seq，落库时只取增量，避免历史日志重复写入
 
 	// 数据库运行记录
 	var runID int64
@@ -192,6 +193,24 @@ func (m *Manager) Run(name string) error {
 	m.notify()
 
 	go func() {
+		// panic 兜底：任何内部 panic 都必须清理运行状态，否则任务将永远显示"运行中"
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("任务 %s panic: %v", name, p)
+				logbuf.Logf("ERROR", "任务 %s 内部错误: %v", name, p)
+				m.mu.Lock()
+				cancel()
+				delete(m.cancel, name)
+				m.running[name] = false
+				if r := m.results[name]; r != nil {
+					r.Running = false
+					r.End = time.Now()
+					r.Error = fmt.Sprintf("任务内部错误: %v", p)
+				}
+				m.mu.Unlock()
+				m.notify()
+			}
+		}()
 		r := m.runTask(ctx, name, logbuf)
 		stopped := ctx.Err() != nil // 须在 cancel() 之前判定
 		m.mu.Lock()
@@ -226,7 +245,7 @@ func (m *Manager) Run(name string) error {
 			} else {
 				_ = m.db.FinishRun(runID, status, 0, 0, 0, 0, r.Error)
 			}
-			lines := logbuf.Since(0)
+			lines := logbuf.Since(startSeq)
 			dbLines := make([]struct {
 				Time  time.Time
 				Level string
@@ -249,13 +268,15 @@ func (m *Manager) Run(name string) error {
 // Stop 停止正在运行的任务（通过 context 取消，扫描中的网络请求一并中断）
 func (m *Manager) Stop(name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	cancel, ok := m.cancel[name]
+	b := m.logs[name] // 锁内取引用，避免与 Log() 写 map 并发
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("任务 %s 未在运行", name)
 	}
+	m.mu.Unlock() // 先释放锁再取消，避免取消回调与任务收尾相互等待
 	cancel()
-	if b := m.logs[name]; b != nil {
+	if b != nil {
 		b.Logf("WARN", "任务 %s 收到停止指令", name)
 	}
 	return nil
@@ -266,25 +287,30 @@ func (m *Manager) runTask(ctx context.Context, name string, logbuf *LogBuffer) *
 	res := &Result{}
 	cfg := m.cfg
 
-	var taskCfg *config.Task
+	// 值拷贝：运行期间不受 addTask/updateTask/deleteTask 修改共享配置的影响
+	var taskCfg config.Task
+	found := false
 	for i := range cfg.Tasks {
 		if cfg.Tasks[i].Name == name {
-			taskCfg = &cfg.Tasks[i]
+			taskCfg = cfg.Tasks[i]
+			found = true
 			break
 		}
 	}
-	if taskCfg == nil {
+	if !found {
 		res.Error = "任务不存在"
 		return res
 	}
-	var storageCfg *config.Storage
+	var storageCfg config.Storage
+	found = false
 	for i := range cfg.Storages {
 		if cfg.Storages[i].Name == taskCfg.Storage {
-			storageCfg = &cfg.Storages[i]
+			storageCfg = cfg.Storages[i]
+			found = true
 			break
 		}
 	}
-	if storageCfg == nil {
+	if !found {
 		res.Error = fmt.Sprintf("存储 %s 不存在", taskCfg.Storage)
 		return res
 	}
@@ -295,7 +321,7 @@ func (m *Manager) runTask(ctx context.Context, name string, logbuf *LogBuffer) *
 		return res
 	}
 
-	gen := generator.New(cfg, taskCfg, drv, m.db)
+	gen := generator.New(cfg, &taskCfg, drv, m.db)
 	gen.SetLogger(logbuf)
 	res.Result = gen.Run(ctx)
 	if ctx.Err() != nil {

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -56,12 +58,44 @@ type listData struct {
 		IsDir    bool   `json:"is_dir"`
 		Modified string `json:"modified"`
 	} `json:"content"`
+	Total int64 `json:"total"`
 }
 
 // getData /api/fs/get 响应
 type getData struct {
 	RawURL string `json:"raw_url"`
 	URL    string `json:"url"`
+}
+
+// parseOpenListTime 兼容解析 OpenList 返回的时间格式：
+// 新版：RFC3339 纳秒（"2026-01-29T16:27:26.947903156+08:00"）
+// 旧版：无时区（"2006-01-02 15:04:05"）、纯日期、unix 秒等
+// 解析失败返回零值
+func parseOpenListTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	// 带时区格式
+	for _, l := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(l, s); err == nil {
+			return t
+		}
+	}
+	// 无时区格式按本地时区解析
+	for _, l := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(l, s, time.Local); err == nil {
+			return t
+		}
+	}
+	// unix 秒/毫秒
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if n > 1e12 {
+			n /= 1000 // 毫秒
+		}
+		return time.Unix(n, 0)
+	}
+	return time.Time{}
 }
 
 // post 向 OpenList API 发 POST 请求
@@ -118,10 +152,12 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 		}
 		for _, c := range d.Content {
 			f := File{Name: c.Name, Size: c.Size, IsDir: c.IsDir}
-			if t, err := time.ParseInLocation("2006-01-02 15:04:05", c.Modified, time.Local); err == nil {
-				f.Modified = t
-			}
+			f.Modified = parseOpenListTime(c.Modified)
 			files = append(files, f)
+		}
+		// 服务端返回 total 时用它判断是否还有下一页，避免恰好 200 条时的多余空请求
+		if d.Total > 0 && int64(page)*200 >= d.Total {
+			break
 		}
 		if len(d.Content) < 200 {
 			break

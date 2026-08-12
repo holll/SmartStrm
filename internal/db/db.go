@@ -187,11 +187,11 @@ func (d *DB) RunLogs(runID int64) ([]struct {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []struct {
+	out := make([]struct {
 		Time  time.Time `json:"time"`
 		Level string    `json:"level"`
 		Msg   string    `json:"msg"`
-	}
+	}, 0)
 	for rows.Next() {
 		var l struct {
 			Time  time.Time `json:"time"`
@@ -206,94 +206,8 @@ func (d *DB) RunLogs(runID int64) ([]struct {
 	return out, nil
 }
 
-// DailyStats 按天聚合运行统计（近 days 天）
-// 返回: 日期、运行次数、成功数、失败数、停止数、生成总数、错误数
-func (d *DB) DailyStats(days int) ([]struct {
-	Day        string `json:"day"`
-	Runs       int    `json:"runs"`
-	Success    int    `json:"success"`
-	Failed     int    `json:"failed"`
-	Stopped    int    `json:"stopped"`
-	Generated  int    `json:"generated"`
-	ErrorCount int    `json:"error_count"`
-}, error) {
-	rows, err := d.conn.Query(`SELECT date(start_at) as day,
-		COUNT(*) as runs,
-		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as success,
-		SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as failed,
-		SUM(CASE WHEN status='stopped' THEN 1 ELSE 0 END) as stopped,
-		SUM(generated) as generated,
-		SUM(CASE WHEN error != '' THEN 1 ELSE 0 END) as err_count
-		FROM runs WHERE start_at >= datetime('now', ?) GROUP BY day ORDER BY day`,
-		fmt.Sprintf("-%d days", days))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []struct {
-		Day        string `json:"day"`
-		Runs       int    `json:"runs"`
-		Success    int    `json:"success"`
-		Failed     int    `json:"failed"`
-		Stopped    int    `json:"stopped"`
-		Generated  int    `json:"generated"`
-		ErrorCount int    `json:"error_count"`
-	}
-	for rows.Next() {
-		var v struct {
-			Day        string `json:"day"`
-			Runs       int    `json:"runs"`
-			Success    int    `json:"success"`
-			Failed     int    `json:"failed"`
-			Stopped    int    `json:"stopped"`
-			Generated  int    `json:"generated"`
-			ErrorCount int    `json:"error_count"`
-		}
-		if err := rows.Scan(&v.Day, &v.Runs, &v.Success, &v.Failed, &v.Stopped, &v.Generated, &v.ErrorCount); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-// TaskTotals 任务汇总（总运行、总生成、成功率）
-func (d *DB) TaskTotals() ([]struct {
-	Task      string `json:"task"`
-	Runs      int    `json:"runs"`
-	Generated int    `json:"generated"`
-	Success   int    `json:"success"`
-}, error) {
-	rows, err := d.conn.Query(`SELECT task, COUNT(*) as runs, SUM(generated) as generated,
-		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as success
-		FROM runs GROUP BY task ORDER BY runs DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []struct {
-		Task      string `json:"task"`
-		Runs      int    `json:"runs"`
-		Generated int    `json:"generated"`
-		Success   int    `json:"success"`
-	}
-	for rows.Next() {
-		var v struct {
-			Task      string `json:"task"`
-			Runs      int    `json:"runs"`
-			Generated int    `json:"generated"`
-			Success   int    `json:"success"`
-		}
-		if err := rows.Scan(&v.Task, &v.Runs, &v.Generated, &v.Success); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
 func scanRuns(rows *sql.Rows) ([]Run, error) {
-	var out []Run
+	out := make([]Run, 0)
 	for rows.Next() {
 		var r Run
 		var errMsg sql.NullString
@@ -327,7 +241,7 @@ func (d *DB) RecentAudits(limit int) ([]Audit, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Audit
+	out := make([]Audit, 0)
 	for rows.Next() {
 		var a Audit
 		if err := rows.Scan(&a.ID, &a.Time, &a.User, &a.Action, &a.Target, &a.Detail); err != nil {
