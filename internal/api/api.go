@@ -654,6 +654,13 @@ func (s *Server) overwriteTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// 清空目录时间缓存：全量覆写必须忽略"目录未变化"检查，强制重新扫描
+	if s.db != nil {
+		if err := s.db.DeleteDirCache(name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	if err := s.mgr.Run(name); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return

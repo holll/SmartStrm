@@ -71,6 +71,11 @@ func main() {
 		log.Fatalf("初始化账号失败: %v", err)
 	}
 
+	// 清理上次异常退出遗留的"运行中"记录（程序被强制终止时任务无法收尾）
+	if err := database.CleanupStaleRuns(); err != nil {
+		log.Printf("清理遗留运行记录失败: %v", err)
+	}
+
 	// 从数据库组装运行时配置
 	cfg := buildConfig(database, *port)
 

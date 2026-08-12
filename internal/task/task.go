@@ -52,12 +52,20 @@ func (b *LogBuffer) Logf(level, format string, args ...any) {
 }
 
 // Since 返回 seq 之后的增量日志
+// 若缓冲曾被 Reset（seq 重新从 0 计数）且请求的 seq 比当前最大还大，
+// 说明客户端持有的是上一轮的 seq，此时返回全部（模拟从新运行开始）
 func (b *LogBuffer) Since(seq int64) []LogLine {
 	if b == nil {
 		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(b.lines) == 0 {
+		return nil
+	}
+	if seq > b.seq {
+		return b.lines
+	}
 	start := 0
 	for start < len(b.lines) && b.lines[start].Seq <= seq {
 		start++
@@ -174,7 +182,9 @@ func (m *Manager) Run(name string) error {
 		logbuf = NewLogBuffer(5000)
 		m.logs[name] = logbuf
 	}
-	// 日志跨运行累积（环形淘汰最旧），每次运行以分隔行开始
+	// 每次运行重置日志缓冲，实时日志只保留当前（或最近一次）运行的记录；
+	// 历史运行日志在数据库中查看（runs/task_logs）
+	logbuf.Reset()
 	logbuf.Logf("INFO", "==================================================")
 	logbuf.Logf("INFO", "任务 %s 开始运行", name)
 	startSeq := logbuf.LastSeq() // 本次运行起始 seq，落库时只取增量，避免历史日志重复写入
@@ -266,6 +276,7 @@ func (m *Manager) Run(name string) error {
 }
 
 // Stop 停止正在运行的任务（通过 context 取消，扫描中的网络请求一并中断）
+// 返回前等待任务收尾完成（running 清零），保证调用方刷新状态时已停止
 func (m *Manager) Stop(name string) error {
 	m.mu.Lock()
 	cancel, ok := m.cancel[name]
@@ -278,6 +289,14 @@ func (m *Manager) Stop(name string) error {
 	cancel()
 	if b != nil {
 		b.Logf("WARN", "任务 %s 收到停止指令", name)
+	}
+	// 等待 goroutine 收尾（ctx 取消会立即中断网络请求，正常亚秒级完成）
+	deadline := time.Now().Add(5 * time.Second)
+	for m.IsRunning(name) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if m.IsRunning(name) {
+		return fmt.Errorf("任务 %s 停止指令已发出，但仍在收尾", name)
 	}
 	return nil
 }

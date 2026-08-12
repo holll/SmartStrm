@@ -127,6 +127,19 @@ func (d *DB) UpdateRunStatus(id int64, status, errMsg string) error {
 	return err
 }
 
+// CleanupStaleRuns 清理上次异常退出遗留的 running 记录（程序被强制终止时无法收尾）
+func (d *DB) CleanupStaleRuns() error {
+	_, err := d.conn.Exec(`UPDATE runs SET end_at=?, status='error', error='程序异常退出，运行中断'
+		WHERE status='running'`, time.Now().Format(timeFmt))
+	return err
+}
+
+// DeleteDirCache 删除任务的目录时间缓存（全量覆写时强制重新扫描）
+func (d *DB) DeleteDirCache(task string) error {
+	_, err := d.conn.Exec(`DELETE FROM dir_cache WHERE task=?`, task)
+	return err
+}
+
 // InsertLogs 批量写入任务日志
 func (d *DB) InsertLogs(runID int64, lines []struct {
 	Time  time.Time

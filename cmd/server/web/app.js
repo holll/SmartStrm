@@ -480,6 +480,11 @@ async function fetchLog() {
   try {
     const d = await api('/api/tasks/'+encodeURIComponent(LOG_TASK)+'/log?after='+LOG_AFTER);
     const box = document.getElementById('taskLog');
+    // 缓冲被新运行重置（after 回退到 0）：清空旧显示，从新运行开始
+    if (d.after < LOG_AFTER) {
+      box.textContent = '';
+      LOG_AFTER = 0;
+    }
     if (d.lines && d.lines.length) {
       const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       appendLogLines(box, d.lines.map(l => {
@@ -505,6 +510,10 @@ async function stopTask(name) {
   try { await api('/api/tasks/'+encodeURIComponent(name)+'/stop','POST'); }
   catch(e){ toast(e.message, 'danger'); }
   loadTasks(); // 无论成功与否都刷新，避免任务刚结束时的 409 导致残留"运行中"
+  // 若停止的是日志弹窗正在查看的任务，关闭弹窗
+  if (LOG_TASK === name && document.getElementById('taskLogModal').classList.contains('show')) {
+    closeLogModal();
+  }
 }
 async function runAll() { try { await api('/api/tasks/run_all','POST'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
 async function delTask(name) { if(!confirm('确认删除任务 '+name+'？')) return; try { await api('/api/tasks/'+encodeURIComponent(name),'DELETE'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
@@ -664,7 +673,7 @@ async function taskOverwriteAction() {
   try {
     await api('/api/tasks/'+encodeURIComponent(taskName)+'/overwrite','POST');
     toast('已开始全量覆写');
-    closeDialog('taskToolsModal');
+    closeTaskToolModal();
   } catch(e){ toast(e.message, 'danger'); }
 }
 
@@ -676,8 +685,15 @@ async function taskClearAction() {
   try {
     await api('/api/tasks/'+encodeURIComponent(taskName)+'/clear','POST');
     toast('已清除任务目录');
-    closeDialog('taskToolsModal');
+    closeTaskToolModal();
   } catch(e){ toast(e.message, 'danger'); }
+}
+
+// 关闭工具/编辑弹窗并刷新任务列表，使运行中状态与停止按钮及时出现
+function closeTaskToolModal() {
+  closeDialog('taskToolsModal');
+  closeDialog('taskDialog');
+  loadTasks();
 }
 
 async function saveTask() {
