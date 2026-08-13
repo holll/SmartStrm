@@ -24,20 +24,27 @@ type LogLine struct {
 	Msg   string    `json:"msg"`
 }
 
-// LogBuffer 任务日志缓冲（环形，按任务隔离）
+// logBufferMax 实时日志缓冲上限（环形）。生成器每目录一行 INFO，
+// 上限过小会挤出早期日志，导致落库的历史日志缺前半段
+const logBufferMax = 50000
+
+// LogBuffer 任务日志缓冲（环形，按任务隔离，支持 SSE 订阅者）
 type LogBuffer struct {
 	mu    sync.Mutex
 	lines []LogLine
 	max   int
 	seq   int64
+
+	subs  map[int64]chan LogLine // SSE 订阅者：id → 增量行通道
+	subID int64
 }
 
 // NewLogBuffer 创建日志缓冲
 func NewLogBuffer(max int) *LogBuffer {
-	return &LogBuffer{max: max}
+	return &LogBuffer{max: max, subs: map[int64]chan LogLine{}}
 }
 
-// Logf 追加日志
+// Logf 追加日志并广播给订阅者
 func (b *LogBuffer) Logf(level, format string, args ...any) {
 	if b == nil {
 		return
@@ -45,10 +52,56 @@ func (b *LogBuffer) Logf(level, format string, args ...any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.seq++
-	b.lines = append(b.lines, LogLine{Seq: b.seq, Time: time.Now(), Level: level, Msg: fmt.Sprintf(format, args...)})
+	line := LogLine{Seq: b.seq, Time: time.Now(), Level: level, Msg: fmt.Sprintf(format, args...)}
+	b.lines = append(b.lines, line)
 	if len(b.lines) > b.max {
 		b.lines = b.lines[len(b.lines)-b.max:]
 	}
+	for _, ch := range b.subs {
+		// 非阻塞推送：订阅者消费慢时丢弃新行（前端可重新连接拿全量）
+		select {
+		case ch <- line:
+		default:
+		}
+	}
+}
+
+// Subscribe 注册 SSE 订阅者，返回：
+//   - 增量行通道（从订阅时刻起推送）
+//   - 订阅时刻的 seq 快照（调用方先写 [from, snapSeq] 历史，再读通道，保证无丢失无乱序）
+//   - 注销函数（连接断开时调用）
+func (b *LogBuffer) Subscribe() (<-chan LogLine, int64, func()) {
+	if b == nil {
+		ch := make(chan LogLine)
+		return ch, 0, func() {}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ch := make(chan LogLine, 1024)
+	b.subID++
+	id := b.subID
+	b.subs[id] = ch
+	return ch, b.seq, func() {
+		b.mu.Lock()
+		delete(b.subs, id)
+		b.mu.Unlock()
+	}
+}
+
+// History 返回 (from, to] 范围内的日志（SSE 连接的初始同步）
+func (b *LogBuffer) History(from, to int64) []LogLine {
+	if b == nil || to <= from {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]LogLine, 0, 64)
+	for _, l := range b.lines {
+		if l.Seq > from && l.Seq <= to {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // Since 返回 seq 之后的增量日志
@@ -179,14 +232,12 @@ func (m *Manager) Run(name string) error {
 	}
 	logbuf := m.logs[name]
 	if logbuf == nil {
-		logbuf = NewLogBuffer(5000)
+		logbuf = NewLogBuffer(logBufferMax)
 		m.logs[name] = logbuf
 	}
 	// 每次运行重置日志缓冲，实时日志只保留当前（或最近一次）运行的记录；
-	// 历史运行日志在数据库中查看（runs/task_logs）
+	// 历史运行日志在数据库中查看（runs/task_logs）；任务信息块由 generator 输出
 	logbuf.Reset()
-	logbuf.Logf("INFO", "==================================================")
-	logbuf.Logf("INFO", "任务 %s 开始运行", name)
 	startSeq := logbuf.LastSeq() // 本次运行起始 seq，落库时只取增量，避免历史日志重复写入
 
 	// 数据库运行记录
@@ -251,7 +302,9 @@ func (m *Manager) Run(name string) error {
 				status = "stopped"
 			}
 			if r.Result != nil {
-				_ = m.db.FinishRun(runID, status, r.Result.Generated, r.Result.Copied, r.Result.Removed, r.Result.Skipped, r.Error)
+				// DB skipped 列保持「总跳过数」口径（文件+目录），与历史记录可比
+				_ = m.db.FinishRun(runID, status, r.Result.Generated, r.Result.Copied, r.Result.Removed,
+					r.Result.Skipped+r.Result.SkippedDirs, r.Error)
 			} else {
 				_ = m.db.FinishRun(runID, status, 0, 0, 0, 0, r.Error)
 			}
@@ -361,7 +414,7 @@ func (m *Manager) Log(name string) *LogBuffer {
 	if b, ok := m.logs[name]; ok {
 		return b
 	}
-	b := NewLogBuffer(5000)
+	b := NewLogBuffer(logBufferMax)
 	m.logs[name] = b
 	return b
 }

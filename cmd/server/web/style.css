@@ -186,8 +186,8 @@ input[type=checkbox]{accent-color:var(--primary-color)}
 /* ===== 移动端 ===== */
 .top-nav-toggle{display:none;position:fixed;top:.75rem;left:.75rem;z-index:1100;background:#fff;border:1px solid var(--border-color);border-radius:.5rem;padding:.4rem .65rem;color:var(--text-color);font-size:1.25rem;line-height:1;box-shadow:0 0 10px rgba(0,0,0,.08)}
 @media(max-width:768px){
-  header.sidebar{transform:translateX(-100%);transition:transform .3s ease}
-  #app.sidebar-open header.sidebar{transform:translateX(0);box-shadow:0 0 30px rgba(0,0,0,.25)}
+  header.sidebar{transform:translateX(-100%);transition:transform .3s ease;z-index:100}
+  #app.sidebar-open header.sidebar{transform:translateX(0);box-shadow:0 0 30px rgba(0,0,0,.25);z-index:1100}
   #app.sidebar-open::after{content:'';position:fixed;inset:0;background:rgba(33,37,41,.45);z-index:1001}
   .main-content{margin-left:0;padding:1rem}
   .top-nav-toggle{display:block}

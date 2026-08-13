@@ -53,8 +53,20 @@ async function api(path, method='GET', body) {
   return d;
 }
 
-function showLogin() { document.getElementById('login').style.display='flex'; document.getElementById('app').style.display='none'; }
-function showApp() { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; }
+function showLogin() {
+  document.getElementById('login').style.display='flex';
+  document.getElementById('app').style.display='none';
+  // 登录页不显示移动端侧边栏开关
+  const toggle = document.getElementById('sidebarToggle');
+  if (toggle) toggle.style.display = 'none';
+}
+function showApp() {
+  document.getElementById('login').style.display='none';
+  document.getElementById('app').style.display='block';
+  // 恢复移动端侧边栏开关（回退到 CSS 控制：桌面隐藏、移动端显示）
+  const toggle = document.getElementById('sidebarToggle');
+  if (toggle) toggle.style.display = '';
+}
 
 async function doLogin() {
   const btn = document.getElementById('loginBtn');
@@ -135,7 +147,8 @@ function fmtDur(start, end) {
 
 // 查看某次运行的完整日志（数据库）
 async function viewRunLog(runId, task) {
-  LOG_TASK = null; LOG_POLLING = true; LOG_HISTORY = true; // 停止实时轮询，展示历史日志
+  LOG_TASK = null; LOG_HISTORY = true; // 展示历史日志，不建立实时流
+  closeLogStream();
   document.getElementById('logModalTitle').textContent = '任务日志 - ' + task + ' #' + runId;
   const box = document.getElementById('taskLog');
   box.textContent = '加载中…';
@@ -143,16 +156,15 @@ async function viewRunLog(runId, task) {
   try {
     const lines = (await api('/api/runs/'+runId+'/log')) || [];
     box.textContent = '';
-    appendLogLines(box, lines.map(l => fmtTime(l.time) + ' ' + levelTag(l.level) + l.msg), false);
+    appendLogLines(box, lines.map(formatLogLine), false);
     box.scrollTop = box.scrollHeight;
   } catch(e) { box.textContent = '加载失败: ' + e.message; }
 }
 
-// 关闭日志弹窗时停止实时刷新
+// 关闭日志弹窗时关闭 SSE 连接
 function closeLogModal() {
   LOG_TASK = null;
-  LOG_POLLING = false;
-  if (LOG_INTERVAL) { clearInterval(LOG_INTERVAL); LOG_INTERVAL = null; }
+  closeLogStream();
   closeDialog('taskLogModal');
 }
 
@@ -172,8 +184,23 @@ function appendLogLines(box, lines, animated) {
   while (box.children.length > 2000) box.removeChild(box.firstChild);
 }
 
+// 日志级别标签（仿原版：INFO 不显示标签，仅警示级别带标签）
 function levelTag(l) {
-  return l === 'ERROR' ? '[ERR] ' : l === 'WARN' ? '[WARN] ' : l === 'DEBUG' ? '[DBG] ' : '[INFO] ';
+  return l === 'ERROR' ? '[ERR] ' : l === 'WARN' ? '[WARN] ' : l === 'DEBUG' ? '[DBG] ' : '';
+}
+
+// 日志行时间格式（仿原版：MM-DD HH:MM:SS，无年份）
+function fmtLogTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  // Go 零值时间（0001 年）与无效时间显示空
+  if (isNaN(d) || d.getFullYear() < 2000) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+// 日志行渲染：时间 + 级别标签 + 消息（实时与历史日志共用）
+function formatLogLine(l) {
+  return fmtLogTime(l.time) + ' ' + levelTag(l.level) + l.msg;
 }
 
 // ============ 存储浏览 ============
@@ -460,48 +487,71 @@ async function loadStatus() {
   } catch(e) {}
 }
 
-// ============ 任务日志（增量轮询） ============
-let LOG_TASK = null, LOG_AFTER = 0, LOG_POLLING = false, LOG_HISTORY = false, LOG_INTERVAL = null;
+// ============ 任务日志（SSE 实时流） ============
+// EventSource 无法携带 Authorization header，故用 fetch + ReadableStream 手动解析 SSE
+let LOG_TASK = null, LOG_HISTORY = false, LOG_STREAM_CTRL = null;
 
 function selectLog(name) {
-  LOG_TASK = name; LOG_AFTER = 0; LOG_HISTORY = false;
+  LOG_TASK = name; LOG_HISTORY = false;
   document.getElementById('logModalTitle').textContent = '任务日志 - ' + name;
-  document.getElementById('taskLog').textContent = '';
   // 运行中显示停止按钮（原版交互）
   const stopBtn = document.getElementById('logStopBtn');
   const running = (TASKS.find(x => x.name === name) || {}).running;
   if (stopBtn) stopBtn.style.display = running ? '' : 'none';
   openDialog('taskLogModal');
-  fetchLog();
-  if (!LOG_POLLING) startLogPoll();
+  startLogStream(name);
 }
-async function fetchLog() {
-  if (!LOG_TASK) return;
-  try {
-    const d = await api('/api/tasks/'+encodeURIComponent(LOG_TASK)+'/log?after='+LOG_AFTER);
-    const box = document.getElementById('taskLog');
-    // 缓冲被新运行重置（after 回退到 0）：清空旧显示，从新运行开始
-    if (d.after < LOG_AFTER) {
-      box.textContent = '';
-      LOG_AFTER = 0;
+
+// SSE 实时日志流：连接建立时拉全量历史，随后增量推送（毫秒级实时）
+function startLogStream(name) {
+  closeLogStream();
+  const ctrl = new AbortController();
+  LOG_STREAM_CTRL = ctrl;
+  const box = document.getElementById('taskLog');
+  box.textContent = '';
+  fetch('/api/tasks/'+encodeURIComponent(name)+'/log/stream?after=0', {
+    headers: { 'Authorization': 'Bearer ' + TOKEN },
+    signal: ctrl.signal
+  }).then(async resp => {
+    if (!resp.ok) {
+      // 401（token 过期/已改密）：切回登录页，不进入重连循环
+      if (resp.status === 401) { showLogin(); return; }
+      throw new Error('HTTP ' + resp.status);
     }
-    if (d.lines && d.lines.length) {
-      const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-      appendLogLines(box, d.lines.map(l => {
-        const t = fmtTime(l.time) + ' ';
-        const tag = l.level === 'ERROR' ? '[ERR] ' : l.level === 'WARN' ? '[WARN] ' : l.level === 'DEBUG' ? '[DBG] ' : '[INFO] ';
-        return t + tag + l.msg;
-      }), d.lines.length <= 50);
-      if (nearBottom) box.scrollTop = box.scrollHeight;
-    } else if (LOG_AFTER === 0 && !box.children.length) {
-      box.textContent = '暂无日志输出';
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const m = frame.match(/^event: (\w+)\ndata: (.+)$/m);
+        if (m && m[1] === 'line') {
+          try {
+            const l = JSON.parse(m[2]);
+            appendLogLines(box, [formatLogLine(l)], true);
+            box.scrollTop = box.scrollHeight; // 实时日志始终跟随最新
+          } catch(err) { /* 忽略解析失败的行 */ }
+        }
+      }
     }
-    LOG_AFTER = d.after || LOG_AFTER;
-  } catch(e) {}
+  }).catch(e => {
+    // 连接断开（任务结束/网络抖动）：弹窗仍打开且任务未切换时自动重连
+    if (e.name !== 'AbortError' && LOG_TASK === name &&
+        document.getElementById('taskLogModal').classList.contains('show')) {
+      setTimeout(() => { if (LOG_TASK === name) startLogStream(name); }, 2000);
+    }
+  });
 }
-function startLogPoll() {
-  LOG_POLLING = true;
-  LOG_INTERVAL = setInterval(fetchLog, 2000);
+function closeLogStream() {
+  if (LOG_STREAM_CTRL) {
+    LOG_STREAM_CTRL.abort();
+    LOG_STREAM_CTRL = null;
+  }
 }
 
 async function runTask(name) { try { await api('/api/tasks/'+encodeURIComponent(name)+'/run','POST'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
@@ -950,6 +1000,8 @@ async function saveSettings() {
         strm_base: document.getElementById('s-strmBase').value.trim()
       }
     });
+    // 刷新保存目录缓存：任务编辑弹窗的「STRM 将保存在」提示立即使用新目录
+    TASK_SAVE_DIR = document.getElementById('s-saveDir').value.trim();
     toast('已保存');
   } catch(e){ toast(e.message, 'danger'); }
   btn.disabled = false; btn.textContent = '保存设置';

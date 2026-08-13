@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -12,10 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 
 	"smartstrm/internal/api"
@@ -36,6 +39,12 @@ var (
 )
 
 func main() {
+	// 内存优化：软上限 96MiB + 降低 GC 频率。
+	// 无负载时 Go 运行时在 GC 后归还大部分堆，RSS 可降至 ~20MB；
+	// 任务扫描峰值（日志缓冲/请求处理）在 96MiB 内绰绰有余
+	debug.SetMemoryLimit(96 << 20)
+	debug.SetGCPercent(200)
+
 	port := flag.Int("port", 8024, "监听端口，如 8024")
 	resetPwd := flag.Bool("reset-password", false, "重置 admin 密码：生成随机密码并打印，执行后退出")
 	flag.Parse()
@@ -82,6 +91,10 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// 静态资源 gzip 压缩（HTML/CSS/JS 文本压缩率 70-80%）；
+	// SSE 日志流为实时流式输出，排除压缩
+	r.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPathsRegexs([]string{`/api/tasks/[^/]+/log/stream`})))
 
 	mgr := task.New(cfg, database)
 	mgr.Start()
@@ -233,9 +246,16 @@ func registerWeb(r *gin.Engine, webFS embed.FS) {
 			}
 			fileData := data
 			route := "/" + rel
+			// ETag 基于文件内容：浏览器带 If-None-Match 时返回 304，
+			// 内容未变不重复下载（升级后内容变化自然失效，无需手动清缓存）
+			etag := fmt.Sprintf(`"%x"`, sha256.Sum256(fileData))
 			r.GET(route, func(c *gin.Context) {
-				// 静态资源禁用缓存：升级后立即生效，避免浏览器使用旧版本
-				c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+				c.Header("Cache-Control", "no-cache")
+				c.Header("ETag", etag)
+				if c.GetHeader("If-None-Match") == etag {
+					c.Status(http.StatusNotModified)
+					return
+				}
 				c.Data(http.StatusOK, contentType(rel), fileData)
 			})
 		}

@@ -3,6 +3,7 @@ module smartstrm
 go 1.25.0
 
 require (
+	github.com/gin-contrib/gzip v1.2.6
 	github.com/gin-gonic/gin v1.12.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.54.0

@@ -78,3 +78,55 @@ func TestStopThenRunningFlag(t *testing.T) {
 	}
 	t.Logf("Stop 后 %.2fs running 标志清零", time.Since(stopAt).Seconds())
 }
+
+// SSE 订阅：订阅前历史 + 订阅后增量，无丢失无乱序
+func TestLogBufferSubscribe(t *testing.T) {
+	b := NewLogBuffer(50000)
+	b.Logf("INFO", "第1行")
+	b.Logf("INFO", "第2行")
+
+	ch, snapSeq, unsub := b.Subscribe()
+	defer unsub()
+	if snapSeq != 2 {
+		t.Fatalf("快照 seq 应为 2，得到 %d", snapSeq)
+	}
+
+	// 订阅后写入
+	b.Logf("INFO", "第3行")
+	b.Logf("INFO", "第4行")
+
+	// 历史 + 增量应完整且有序
+	hist := b.History(0, snapSeq)
+	var got []string
+	for _, l := range hist {
+		got = append(got, l.Msg)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(got) < 4 {
+		select {
+		case l := <-ch:
+			got = append(got, l.Msg)
+		case <-time.After(time.Until(deadline)):
+			t.Fatalf("等待增量超时，当前 %v", got)
+		}
+	}
+	want := []string{"第1行", "第2行", "第3行", "第4行"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("顺序错乱: 第 %d 条 %q != %q", i, got[i], w)
+		}
+	}
+}
+
+// 取消订阅后不再收到推送
+func TestLogBufferUnsubscribe(t *testing.T) {
+	b := NewLogBuffer(50000)
+	ch, _, unsub := b.Subscribe()
+	unsub()
+	b.Logf("INFO", "不应收到")
+	select {
+	case l := <-ch:
+		t.Fatalf("注销后仍收到: %v", l.Msg)
+	default:
+	}
+}

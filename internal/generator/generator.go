@@ -21,11 +21,13 @@ import (
 
 // Result 一次任务运行的统计结果
 type Result struct {
-	Generated int      `json:"generated"` // 生成 STRM 数
-	Copied    int      `json:"copied"`    // 复制文件数
-	Removed   int      `json:"removed"`   // 同步模式清理数
-	Skipped   int      `json:"skipped"`   // 跳过数
-	Errors    []string `json:"errors"`
+	Generated   int      `json:"generated"`    // 生成 STRM 数
+	Copied      int      `json:"copied"`       // 复制文件数
+	Removed     int      `json:"removed"`      // 同步模式清理数
+	Skipped     int      `json:"skipped"`      // 跳过文件数
+	SkippedDirs int      `json:"skipped_dirs"` // 跳过目录数
+	ListFailed  int      `json:"list_failed"`  // 读取目录失败数
+	Errors      []string `json:"errors"`
 }
 
 // Logger 任务日志接口
@@ -78,6 +80,16 @@ func (g *Generator) logf(level, format string, args ...any) {
 func (g *Generator) Run(ctx context.Context) *Result {
 	g.env = plugins.EnvForTask(ctx, g.cfg, g.task)
 	g.result = &Result{}
+	// 汇总与结束日志统一在 defer 输出，确保所有返回路径（含创建目录失败提前返回）都有统计行
+	defer func() {
+		g.logf("INFO", "【生成文件完成】 生成 %d 个，复制 %d 个，跳过 %d 个，跳过目录 %d 个，读取目录失败 %d 个",
+			g.result.Generated, g.result.Copied, g.result.Skipped, g.result.SkippedDirs, g.result.ListFailed)
+		if ctx.Err() != nil {
+			g.logf("WARN", "任务被停止")
+		} else {
+			g.logf("INFO", "任务完成。")
+		}
+	}()
 
 	if err := os.MkdirAll(g.taskDir, 0o755); err != nil {
 		g.result.Errors = append(g.result.Errors, fmt.Sprintf("创建目录失败: %v", err))
@@ -85,7 +97,22 @@ func (g *Generator) Run(ctx context.Context) *Result {
 	}
 	g.loadDirCache()
 
-	g.logf("INFO", "扫描远端 %s → 本地 %s", g.task.StoragePath, g.taskDir)
+	// 任务信息块（仿原版日志格式）
+	yn := func(b bool) string {
+		if b {
+			return "True"
+		}
+		return "False"
+	}
+	g.logf("INFO", "==================================================")
+	g.logf("INFO", "开始任务: %s", g.task.Name)
+	g.logf("INFO", "任务类型: 生成 STRM")
+	g.logf("INFO", "远端路径: %s", g.task.StoragePath)
+	g.logf("INFO", "增量同步: %s", yn(g.task.Incremental))
+	g.logf("INFO", "目录时间检查: %s", yn(g.task.DirTimeCheck))
+	g.logf("INFO", "保存目录: %s", filepath.ToSlash(g.taskDir))
+	g.logf("INFO", "==================================================")
+	g.logf("INFO", ">>> 开始生成")
 	g.walkDir(ctx, g.task.StoragePath, "", 0)
 
 	if !g.task.Incremental {
@@ -93,13 +120,6 @@ func (g *Generator) Run(ctx context.Context) *Result {
 		g.cleanupLocal()
 	}
 	g.saveDirCache()
-	if ctx.Err() != nil {
-		g.logf("WARN", "任务被停止：已生成 %d，复制 %d，跳过 %d",
-			g.result.Generated, g.result.Copied, g.result.Skipped)
-	} else {
-		g.logf("INFO", "完成：生成 %d，复制 %d，清理 %d，跳过 %d",
-			g.result.Generated, g.result.Copied, g.result.Removed, g.result.Skipped)
-	}
 	return g.result
 }
 
@@ -108,10 +128,12 @@ func (g *Generator) Run(ctx context.Context) *Result {
 // 返回 false 表示目录未完整处理（列表失败/任务被停止/子目录失败），
 // 此时不记录 mtime 缓存，下次运行仍会扫描，避免「目录已建但 strm 未生成」被跳过
 func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mtime int64) bool {
+	g.logf("INFO", "读取目录: %s", remotePath)
 	files, err := g.drv.List(ctx, remotePath)
 	if err != nil {
-		msg := fmt.Sprintf("列出 %s 失败: %v", remotePath, err)
+		msg := fmt.Sprintf("读取目录失败: %s (%v)", remotePath, err)
 		g.result.Errors = append(g.result.Errors, msg)
+		g.result.ListFailed++
 		g.logf("ERROR", "%s", msg)
 		return false
 	}
@@ -129,10 +151,14 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 			return false
 		}
 
-		// 插件关键词过滤
+		// 插件关键词过滤（文件计跳过，目录计跳过目录）
 		if g.skipByPlugins(f.Name, f.IsDir) {
 			g.logf("DEBUG", "关键词过滤跳过: %s/%s", remotePath, f.Name)
-			g.result.Skipped++
+			if f.IsDir {
+				g.result.SkippedDirs++
+			} else {
+				g.result.Skipped++
+			}
 			continue
 		}
 
@@ -145,7 +171,7 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 			// 目录时间检查：远端目录未更新则跳过递归
 			if g.task.DirTimeCheck && g.dirUnchanged(remotePath, f) {
 				g.logf("DEBUG", "目录未变化跳过: %s/%s", remotePath, f.Name)
-				g.result.Skipped++
+				g.result.SkippedDirs++
 				continue
 			}
 			if !g.walkDir(ctx, joinRemote(remotePath, f.Name), rel, f.Modified.Unix()) {
