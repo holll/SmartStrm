@@ -25,18 +25,25 @@ import (
 	"smartstrm/internal/config"
 	"smartstrm/internal/db"
 	"smartstrm/internal/task"
+	"smartstrm/internal/version"
 	"smartstrm/internal/webhook"
 )
 
 //go:embed web
 var webFS embed.FS
 
-// 版本信息（由 build.bat 通过 -ldflags 注入）
+// 版本信息（由 build.bat 通过 -ldflags 注入，init 中转写至 internal/version 供 API 使用）
 var (
 	Version   = "0.0.0"
 	Commit    = ""
 	BuildTime = ""
 )
+
+func init() {
+	version.Version = Version
+	version.Commit = Commit
+	version.BuildTime = BuildTime
+}
 
 func main() {
 	// 内存优化：软上限 96MiB + 降低 GC 频率。

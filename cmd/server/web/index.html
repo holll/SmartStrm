@@ -58,6 +58,7 @@
       <button id="nav-plugins"  class="nav-link" onclick="showPage('plugins')"><i class="bi bi-plug"></i> 插件管理</button>
       <button id="nav-audit"    class="nav-link" onclick="showPage('audit')"><i class="bi bi-journal-check"></i> 审计日志</button>
       <button id="nav-settings" class="nav-link" onclick="showPage('settings')"><i class="bi bi-gear"></i> 系统设置</button>
+      <button id="nav-about"    class="nav-link" onclick="showPage('about')"><i class="bi bi-info-circle"></i> 关于</button>
     </nav>
     <div class="sidebar-footer">
       <p class="text-muted small mb-3 text-center">SmartStrm-Go <span class="badge rounded-pill text-bg-light border">Go</span></p>
@@ -284,6 +285,33 @@
             <div class="form-row"><label for="wh-storage">删除操作使用的存储</label><select class="form-select" id="wh-storage"></select></div>
             <div class="form-row"><label for="wh-allowed">只允许删除的路径前缀（逗号分隔，防误删）</label><input type="text" class="form-control" id="wh-allowed" placeholder="/115/AV,/115/FC2"></div>
             <button class="btn btn-primary btn-sm" id="saveWhBtn" onclick="saveWebhook()"><i class="bi bi-check-lg me-1"></i>保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关于 -->
+    <div id="page-about" style="display:none">
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-info-circle me-2 text-primary"></i>关于</h5></div>
+        <div class="card-body">
+          <div class="about-header">
+            <span class="about-logo"><i class="bi bi-film"></i></span>
+            <div>
+              <div class="about-name">SmartStrm-Go</div>
+              <div class="about-desc text-muted">STRM 媒体文件管理工具</div>
+            </div>
+          </div>
+          <div class="about-items">
+            <div class="about-item"><span class="about-key">当前版本</span><strong id="ab-version" class="mono">–</strong></div>
+            <div class="about-item"><span class="about-key">构建提交</span><strong id="ab-commit" class="mono">–</strong></div>
+            <div class="about-item"><span class="about-key">构建时间</span><strong id="ab-build" class="mono">–</strong></div>
+            <div class="about-item"><span class="about-key">更新状态</span><span id="ab-update">检查中…</span></div>
+            <div class="about-item"><span class="about-key">上次检查</span><strong id="ab-checked" class="mono">–</strong></div>
+            <div class="about-item"><span class="about-key">项目地址</span><a id="ab-repo" href="#" target="_blank" rel="noopener">–</a></div>
+          </div>
+          <div class="about-actions">
+            <button class="btn btn-outline-secondary btn-sm" onclick="checkUpdate(true)"><i class="bi bi-arrow-clockwise me-1"></i>检查更新</button>
           </div>
         </div>
       </div>

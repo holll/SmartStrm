@@ -179,6 +179,17 @@ input[type=checkbox]{accent-color:var(--primary-color)}
 .browser-card .card-body{flex:1;overflow:hidden;display:flex;flex-direction:column}
 .browser-card .table-responsive{flex:1;overflow:auto}
 
+/* ===== ABOUT（关于页） ===== */
+.about-header{display:flex;align-items:center;gap:1rem;padding:1.25rem 0 1rem}
+.about-logo{display:inline-flex;width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,var(--logo-color),var(--band-color));color:#fff;align-items:center;justify-content:center;font-size:1.75rem;box-shadow:0 4px 12px rgba(0,162,233,.3);flex-shrink:0}
+.about-name{font-size:1.35rem;font-weight:600;color:#212529}
+.about-desc{font-size:.9rem}
+.about-items{border-top:1px solid var(--border-color);padding-top:.25rem}
+.about-item{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.85rem 0;border-bottom:1px solid var(--border-color);flex-wrap:wrap}
+.about-key{color:var(--muted);font-size:.9rem;flex-shrink:0}
+.about-item strong,.about-item > span:not(.about-key){word-break:break-all;font-size:.9rem}
+.about-actions{padding-top:1.25rem}
+
 /* ===== 页面进入动画（showPage 时 JS 触发） ===== */
 .page-enter .card,.page-enter .stat-card{animation:cardIn .45s cubic-bezier(.22,.9,.3,1) backwards}
 @keyframes cardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}

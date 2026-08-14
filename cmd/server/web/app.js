@@ -82,7 +82,7 @@ async function doLogin() {
 function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; api('/api/logout','POST').catch(()=>{}); showLogin(); }
 
 function showPage(name) {
-  ['overview','tasks','storages','browse','plugins','audit','settings'].forEach(p => {
+  ['overview','tasks','storages','browse','plugins','audit','settings','about'].forEach(p => {
     document.getElementById('page-'+p).style.display = p===name ? '' : 'none';
     const navBtn = document.getElementById('nav-'+p);
     navBtn.classList.toggle('active', p===name);
@@ -107,6 +107,7 @@ function showPage(name) {
   if (name==='plugins') loadPlugins();
   if (name==='audit') loadAudit();
   if (name==='settings') loadSettings();
+  if (name==='about') loadAbout();
 }
 
 // ============ 运行历史（数据库持久化） ============
@@ -1007,6 +1008,41 @@ async function saveSettings() {
   btn.disabled = false; btn.textContent = '保存设置';
 }
 
+// ============ 关于 ============
+// 进入关于页时加载（带缓存，避免每次进入都请求 GitHub）
+async function loadAbout() {
+  try { renderAbout(await api('/api/about')); } catch(e) {}
+}
+
+// 手动检查更新（忽略服务端缓存）
+async function checkUpdate(force) {
+  const el = document.getElementById('ab-update');
+  if (!el) return;
+  el.innerHTML = '检查中…';
+  try { renderAbout(await api('/api/about' + (force ? '?refresh=1' : ''))); }
+  catch(e) { el.innerHTML = '<span style="color:var(--red)">检查失败: ' + esc(e.message) + '</span>'; }
+}
+
+function renderAbout(d) {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v || '–'; };
+  set('ab-version', d.version);
+  set('ab-commit', d.commit ? '#' + d.commit : '–');
+  set('ab-build', d.build_time);
+  set('ab-checked', fmtTime(d.checked_at));
+  const repo = document.getElementById('ab-repo');
+  if (repo) { repo.href = d.repo_url || '#'; repo.textContent = d.repo_url || '–'; }
+  const el = document.getElementById('ab-update');
+  if (!el) return;
+  if (d.error) {
+    el.innerHTML = '<span style="color:var(--red)">检查失败: ' + esc(d.error) + '</span>';
+  } else if (d.is_latest) {
+    el.innerHTML = '<span class="tag on">已是最新版本</span>';
+  } else {
+    el.innerHTML = '<span class="tag off">发现新版本 ' + esc(d.latest || '') + '</span> ' +
+      `<a href="${esc(d.latest_url || d.repo_url || '#')}" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> 前往下载</a>`;
+  }
+}
+
 // ============ 工具 ============
 // esc: HTML 文本上下文转义
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -1049,7 +1085,7 @@ async function loadAll() {
 
 // 初始化：hash 定位页面，无 hash 默认总览（等 app 显示后再切页，保证入场动画生效）
 (function init() {
-  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|settings)$/);
+  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|settings|about)$/);
   const target = m ? m[1] : 'overview';
   if (TOKEN) {
     api('/api/settings').then(() => { showApp(); showPage(target); loadAll(); }).catch(() => showLogin());

@@ -24,6 +24,7 @@ import (
 	"smartstrm/internal/driver"
 	"smartstrm/internal/plugins"
 	"smartstrm/internal/task"
+	"smartstrm/internal/version"
 )
 
 // Server API 服务
@@ -96,12 +97,22 @@ func (s *Server) Register(r *gin.Engine) {
 		api.GET("/webhook/info", s.webhookInfo)
 		api.PUT("/webhook", s.putWebhook)
 		api.POST("/webhook/regenerate", s.regenerateWebhook)
-		// 运行历史 / 审计
-		api.GET("/runs", s.recentRuns)
-		api.GET("/runs/:id/log", s.runLog)
-		api.GET("/tasks/:name/history", s.taskHistory)
-		api.GET("/audit", s.recentAudits)
+	// 运行历史 / 审计
+	api.GET("/runs", s.recentRuns)
+	api.GET("/runs/:id/log", s.runLog)
+	api.GET("/tasks/:name/history", s.taskHistory)
+	api.GET("/audit", s.recentAudits)
+	// 关于（版本 + 更新检查）
+	api.GET("/about", s.about)
 	}
+}
+
+// about 关于信息：当前版本、构建信息、GitHub 最新版本检查结果
+// ?refresh=1 忽略缓存强制重新检查
+func (s *Server) about(c *gin.Context) {
+	force := c.Query("refresh") == "1"
+	info := version.Check(c.Request.Context(), force)
+	c.JSON(http.StatusOK, info)
 }
 
 // ============ 审计记录 ============
