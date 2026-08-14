@@ -48,7 +48,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           COMMIT="${{ github.sha }}"
-          BUILDTIME="$(date -u +%Y-%m-%d_%H-%M-%S)"
+          BUILDTIME="$(date -u -d '+8 hours' +%Y-%m-%d_%H-%M-%S)" # 中国时区 (UTC+8)
           echo "Building smartstrm ${VERSION} (commit ${COMMIT:0:8}) for ${GOOS}/${GOARCH}"
           go build \
             -o "dist/smartstrm_${GOOS}_${GOARCH}${{ matrix.ext }}" \

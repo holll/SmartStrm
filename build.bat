@@ -15,7 +15,7 @@ REM Get short commit hash
 for /f "delims=" %%a in ('git rev-parse --short HEAD') do set COMMIT=%%a
 
 REM Get build timestamp
-for /f "delims=" %%a in ('powershell -command "Get-Date -Format yyyy-MM-dd_HH-mm-ss"') do set BUILDTIME=%%a
+for /f "delims=" %%a in ('powershell -command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date),'China Standard Time').ToString('yyyy-MM-dd_HH-mm-ss')"') do set BUILDTIME=%%a
 
 echo Version: %VERSION%
 echo Commit:  %COMMIT%
