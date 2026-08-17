@@ -79,7 +79,7 @@ async function doLogin() {
   } catch(e) { document.getElementById('loginErr').textContent = e.message; }
   btn.disabled = false; btn.textContent = '登录';
 }
-function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; api('/api/logout','POST').catch(()=>{}); showLogin(); }
+function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; closeStateStream(); api('/api/logout','POST').catch(()=>{}); showLogin(); }
 
 function showPage(name) {
   ['overview','tasks','storages','browse','plugins','audit','settings','about'].forEach(p => {
@@ -150,39 +150,59 @@ function fmtDur(start, end) {
 async function viewRunLog(runId, task) {
   LOG_TASK = null; LOG_HISTORY = true; // 展示历史日志，不建立实时流
   closeLogStream();
+  logReset();
   document.getElementById('logModalTitle').textContent = '任务日志 - ' + task + ' #' + runId;
   const box = document.getElementById('taskLog');
   box.textContent = '加载中…';
   openDialog('taskLogModal');
   try {
     const lines = (await api('/api/runs/'+runId+'/log')) || [];
-    box.textContent = '';
-    appendLogLines(box, lines.map(formatLogLine), false);
-    box.scrollTop = box.scrollHeight;
-  } catch(e) { box.textContent = '加载失败: ' + e.message; }
+    // 请求在途时用户可能已切换查看对象（开实时流/关弹窗），此时丢弃结果
+    if (!LOG_HISTORY) return;
+    LOG_LINES = lines.slice(-LOG_MAX_LINES).map(formatLogLine);
+    logFlush(box);
+  } catch(e) {
+    if (LOG_HISTORY) box.textContent = '加载失败: ' + e.message;
+  }
 }
 
 // 关闭日志弹窗时关闭 SSE 连接
 function closeLogModal() {
   LOG_TASK = null;
+  LOG_HISTORY = null;
+  logReset();
   closeLogStream();
   closeDialog('taskLogModal');
 }
 
-// 以行为单位追加日志（每行淡入动画，增量场景启用）
-function appendLogLines(box, lines, animated) {
-  const frag = document.createDocumentFragment();
-  lines.forEach((line, i) => {
-    const el = document.createElement('div');
-    el.className = 'log-line';
-    if (!animated) el.style.animation = 'none';
-    else el.style.animationDelay = Math.min(i * 40, 400) + 'ms';
-    el.textContent = line;
-    frag.appendChild(el);
-  });
-  box.appendChild(frag);
-  // 防内存膨胀：只保留最近 2000 行
-  while (box.children.length > 2000) box.removeChild(box.firstChild);
+// 日志渲染：内存行缓冲 + rAF 合并写入单文本节点（DOM 节点数恒为 1）。
+// 逐行到达的 SSE 行在下一帧合并渲染，日志爆发时自然节流，避免逐行创建元素卡顿
+const LOG_MAX_LINES = 2000; // 缓冲截断上限，防内存与渲染持续膨胀
+let LOG_LINES = [];
+let LOG_FLUSH_RAF = null;
+
+// 取消待渲染帧并清空缓冲（关闭弹窗/切换查看对象时调用，防止悬挂 rAF 写入旧内容）
+function logReset() {
+  if (LOG_FLUSH_RAF) {
+    cancelAnimationFrame(LOG_FLUSH_RAF);
+    LOG_FLUSH_RAF = null;
+  }
+  LOG_LINES = [];
+}
+
+function logFlush(box) {
+  LOG_FLUSH_RAF = null;
+  box.textContent = LOG_LINES.join('\n');
+  box.scrollTop = box.scrollHeight; // 始终跟随最新
+}
+
+function logAppend(box, line) {
+  LOG_LINES.push(line);
+  if (LOG_LINES.length > LOG_MAX_LINES) {
+    LOG_LINES.splice(0, LOG_LINES.length - LOG_MAX_LINES);
+  }
+  if (LOG_FLUSH_RAF) return; // 本帧已有待渲染内容，合并写入
+  LOG_FLUSH_RAF = requestAnimationFrame(() => logFlush(box));
 }
 
 // 日志级别标签（仿原版：INFO 不显示标签，仅警示级别带标签）
@@ -509,6 +529,7 @@ function startLogStream(name) {
   const ctrl = new AbortController();
   LOG_STREAM_CTRL = ctrl;
   const box = document.getElementById('taskLog');
+  logReset();
   box.textContent = '';
   fetch('/api/tasks/'+encodeURIComponent(name)+'/log/stream?after=0', {
     headers: { 'Authorization': 'Bearer ' + TOKEN },
@@ -533,9 +554,10 @@ function startLogStream(name) {
         const m = frame.match(/^event: (\w+)\ndata: (.+)$/m);
         if (m && m[1] === 'line') {
           try {
+            // abort 异步生效，已缓冲的行仍会到达：查看对象已切换时丢弃，防串写
+            if (LOG_TASK !== name) return;
             const l = JSON.parse(m[2]);
-            appendLogLines(box, [formatLogLine(l)], true);
-            box.scrollTop = box.scrollHeight; // 实时日志始终跟随最新
+            logAppend(box, formatLogLine(l));
           } catch(err) { /* 忽略解析失败的行 */ }
         }
       }
@@ -895,8 +917,6 @@ async function loadSettings() {
     document.getElementById('s-saveDir').value = s.strm.save_dir;
     document.getElementById('s-strmBase').value = s.strm.strm_base || '';
     document.getElementById('s-urlEncode').checked = s.strm.url_encode;
-    document.getElementById('s-genType').value = s.strm.gen_type || 'path';
-    syncGenTypeTip();
     const wh = await api('/api/webhook/info');
     document.getElementById('webhookInfo').innerHTML =
       `<input type="text" class="form-control" value="${esc(wh.trigger)}" readonly title="任务触发与 Emby 删除同步共用地址">
@@ -912,16 +932,6 @@ async function loadSettings() {
     sel.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
     sel.value = es.storage || '';
   } catch(e){}
-}
-
-// 生成类型说明联动（原版：fid_mode 动态提示）
-function syncGenTypeTip() {
-  const tip = document.getElementById('s-genType-tip');
-  if (!tip) return;
-  const v = document.getElementById('s-genType').value;
-  tip.textContent = v === 'fid'
-    ? '以文件编号替代路径写入 STRM 内容，可稍微提高起播速度（推荐）'
-    : '以文件路径写入 STRM 内容，兼容性好，但可能起播速度稍慢';
 }
 
 async function saveWebhook() {
@@ -997,7 +1007,6 @@ async function saveSettings() {
         copy_ext: document.getElementById('s-copyExt').value.split(',').map(s=>s.trim()).filter(Boolean),
         save_dir: document.getElementById('s-saveDir').value.trim(),
         url_encode: document.getElementById('s-urlEncode').checked,
-        gen_type: document.getElementById('s-genType').value,
         strm_base: document.getElementById('s-strmBase').value.trim()
       }
     });
@@ -1043,6 +1052,58 @@ function renderAbout(d) {
   }
 }
 
+// ============ 任务状态推送（SSE，替代 5 秒轮询） ============
+// EventSource 无法携带 Authorization header，故用 fetch + ReadableStream 手动解析 SSE（与日志流同法）
+let STATE_STREAM_CTRL = null;
+
+// 收到状态事件后刷新当前可见页面的任务状态
+function refreshState() {
+  if (document.getElementById('page-tasks').style.display !== 'none') loadStatus();
+  if (document.getElementById('page-overview').style.display !== 'none') loadOverview();
+}
+
+function startStateStream() {
+  closeStateStream();
+  const ctrl = new AbortController();
+  STATE_STREAM_CTRL = ctrl;
+  fetch('/api/events/stream', {
+    headers: { 'Authorization': 'Bearer ' + TOKEN },
+    signal: ctrl.signal
+  }).then(async resp => {
+    if (!resp.ok) {
+      // 401（token 过期/已改密）：切回登录页，不进入重连循环
+      if (resp.status === 401) { showLogin(); return; }
+      throw new Error('HTTP ' + resp.status);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        if (frame.startsWith('event: state')) refreshState();
+      }
+    }
+  }).catch(e => {
+    // 连接断开（网络抖动/服务重启）：2 秒后重连，重连后服务端会立即推一帧补齐状态
+    if (e.name !== 'AbortError' && TOKEN) {
+      setTimeout(startStateStream, 2000);
+    }
+  });
+}
+
+function closeStateStream() {
+  if (STATE_STREAM_CTRL) {
+    STATE_STREAM_CTRL.abort();
+    STATE_STREAM_CTRL = null;
+  }
+}
+
 // ============ 工具 ============
 // esc: HTML 文本上下文转义
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -1077,10 +1138,7 @@ function jsAttr(s) { return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\
 
 async function loadAll() {
   await Promise.all([loadOverview(), loadTasks(), loadStorages(), loadPlugins()]);
-  setInterval(() => {
-    if (document.getElementById('page-tasks').style.display !== 'none') loadStatus();
-    if (document.getElementById('page-overview').style.display !== 'none') loadOverview();
-  }, 5000);
+  startStateStream(); // 任务状态变化由 SSE 推送，不再轮询
 }
 
 // 初始化：hash 定位页面，无 hash 默认总览（等 app 显示后再切页，保证入场动画生效）

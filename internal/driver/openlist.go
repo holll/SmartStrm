@@ -22,17 +22,19 @@ var (
 
 // OpenList OpenList/AList 驱动
 type OpenList struct {
-	base   string
-	token  string
-	client *http.Client
+	base    string
+	token   string
+	client  *http.Client
+	limiter *rateLimiter // 按 base 共享的 API 限速器（115 限流）
 }
 
 // NewOpenList 创建 OpenList 驱动
 func NewOpenList(base, token string) *OpenList {
 	return &OpenList{
-		base:  stringsTrimSuffix(base),
-		token: token,
-		client: &http.Client{Timeout: 30 * time.Second},
+		base:    stringsTrimSuffix(base),
+		token:   token,
+		client:  &http.Client{Timeout: 30 * time.Second},
+		limiter: getLimiter(stringsTrimSuffix(base)),
 	}
 }
 
@@ -59,12 +61,6 @@ type listData struct {
 		Modified string `json:"modified"`
 	} `json:"content"`
 	Total int64 `json:"total"`
-}
-
-// getData /api/fs/get 响应
-type getData struct {
-	RawURL string `json:"raw_url"`
-	URL    string `json:"url"`
 }
 
 // parseOpenListTime 兼容解析 OpenList 返回的时间格式：
@@ -98,8 +94,11 @@ func parseOpenListTime(s string) time.Time {
 	return time.Time{}
 }
 
-// post 向 OpenList API 发 POST 请求
+// post 向 OpenList API 发 POST 请求（经限速器排队，防触发远端限流）
 func (o *OpenList) post(ctx context.Context, api string, payload any) (apiResp, error) {
+	if err := o.limiter.wait(ctx); err != nil {
+		return apiResp{}, err
+	}
 	var resp apiResp
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -165,26 +164,6 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 		page++
 	}
 	return files, nil
-}
-
-// GetDirectLink 获取文件直链
-func (o *OpenList) GetDirectLink(ctx context.Context, path string) (string, error) {
-	resp, err := o.post(ctx, "/api/fs/get", map[string]any{"path": path, "password": ""})
-	if err != nil {
-		return "", err
-	}
-	var d getData
-	if err := json.Unmarshal(resp.Data, &d); err != nil {
-		return "", err
-	}
-	link := d.RawURL
-	if link == "" {
-		link = d.URL
-	}
-	if link == "" {
-		return "", fmt.Errorf("未获取到 %s 的直链", path)
-	}
-	return link, nil
 }
 
 // Remove 删除路径（文件或目录）

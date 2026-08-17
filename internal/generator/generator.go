@@ -183,7 +183,7 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(f.Name), "."))
 		switch {
 		case g.isMediaExt(ext):
-			g.generateStrm(ctx, f, remotePath, rel, ext)
+			g.generateStrm(f, remotePath, rel, ext)
 		case g.isCopyExt(ext):
 			g.copyFile(f, remotePath, localDir)
 		}
@@ -197,7 +197,7 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 }
 
 // generateStrm 为媒体文件生成 STRM
-func (g *Generator) generateStrm(ctx context.Context, f driver.File, remotePath, rel, ext string) {
+func (g *Generator) generateStrm(f driver.File, remotePath, rel, ext string) {
 	// 大小阈值
 	if g.env.MediaSize > 0 && f.Size < int64(g.env.MediaSize)*1024*1024 {
 		g.result.Skipped++
@@ -218,7 +218,7 @@ func (g *Generator) generateStrm(ctx context.Context, f driver.File, remotePath,
 	}
 
 	remoteFull := joinRemote(remotePath, f.Name)
-	content := g.buildContent(ctx, remoteFull, ext)
+	content := g.buildContent(remoteFull)
 
 	// 内容替换插件
 	if g.env != nil {
@@ -244,16 +244,8 @@ func (g *Generator) generateStrm(ctx context.Context, f driver.File, remotePath,
 	g.logf("INFO", "生成 %s → %s", remoteFull, localPath)
 }
 
-// buildContent 构建 STRM 内容
-// path 模式: {base}/d/{路径}（OpenList 直链下载）
-// fid 模式: 调用驱动 GetDirectLink 获取直链
-func (g *Generator) buildContent(ctx context.Context, remoteFull, ext string) string {
-	if g.cfg.STRM.GenType == "fid" {
-		if link, err := g.drv.GetDirectLink(ctx, remoteFull); err == nil && link != "" {
-			return link
-		}
-		// 获取失败回退到路径模式
-	}
+// buildContent 构建 STRM 内容：{base}/d/{路径}（路径兼容模式，直链解析交给 OpenList）
+func (g *Generator) buildContent(remoteFull string) string {
 	base := g.cfg.STRM.StrmBase
 	if base == "" {
 		base = g.drv.(interface{ Base() string }).Base()

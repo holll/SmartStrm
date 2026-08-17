@@ -18,8 +18,6 @@ type File struct {
 type Driver interface {
 	// List 列出目录内容
 	List(ctx context.Context, path string) ([]File, error)
-	// GetDirectLink 获取文件直链（文件编号模式下写入 STRM）
-	GetDirectLink(ctx context.Context, path string) (string, error)
 	// Remove 删除文件或目录（Emby 删除同步、同步模式清理）
 	Remove(ctx context.Context, path string) error
 	// Rename 重命名（预留）

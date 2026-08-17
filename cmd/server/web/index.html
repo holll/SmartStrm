@@ -237,13 +237,6 @@
         <h6 class="fw-bold mb-3 mt-4"><i class="bi bi-file-earmark-play me-2"></i>生成设置</h6>
         <div class="form-row"><label for="s-saveDir">生成根目录</label><input type="text" class="form-control" id="s-saveDir"><div class="tip">任务目录为 根目录/任务名</div></div>
         <div class="form-row"><label for="s-strmBase">STRM 直链前缀</label><input type="text" class="form-control" id="s-strmBase" placeholder="如 http://alist.example.com…"><div class="tip">写入 STRM 的 URL 前缀，须能被 Emby 访问到；留空使用存储自身地址</div></div>
-        <div class="form-row"><label for="s-genType">云盘类存储生成类型</label>
-          <select class="form-select" id="s-genType" onchange="syncGenTypeTip()">
-            <option value="fid">文件编号模式</option>
-            <option value="path">路径兼容模式</option>
-          </select>
-          <div class="tip" id="s-genType-tip">以文件编号替代路径写入 STRM 内容，可稍微提高起播速度（推荐）</div>
-        </div>
         <div class="check-row"><input type="checkbox" class="form-check-input me-2" id="s-urlEncode"><label class="form-check-label" for="s-urlEncode">对 STRM 进行 URL 编码</label><div class="tip ms-1">以增强非英文路径的兼容性，你可能会看到像 <code>%E5%A6%99</code> 的路径，并非乱码</div></div>
         <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSettings()"><i class="bi bi-check-lg me-1"></i>保存设置</button>
       </div>

@@ -141,11 +141,9 @@ input[type=checkbox]{accent-color:var(--primary-color)}
 .collapse.show{display:block}
 
 /* ===== LOG VIEWER（仿原版 task-log，modal 内，高度自适应小屏） ===== */
-#taskLog,.task-log{height:clamp(300px,60vh,600px);width:100%;overflow-x:auto;overflow-y:auto;border-radius:8px;background-color:#212529;color:#e3e3e3;font-family:Consolas,monospace;font-size:.7rem;white-space:pre;padding:.5rem;border:0;position:relative;margin:0}
+#taskLog,.task-log{height:clamp(300px,60vh,600px);width:100%;overflow-x:auto;overflow-y:auto;border-radius:8px;background-color:#212529;color:#e3e3e3;font-family:Consolas,monospace;font-size:.7rem;white-space:pre-wrap;word-break:break-all;padding:.5rem;border:0;position:relative;margin:0}
 #taskLog::after{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;background:linear-gradient(90deg,transparent,var(--logo-color),transparent);opacity:.3;animation:scanlineX 3s ease-in-out infinite;pointer-events:none}
 @keyframes scanlineX{0%,100%{transform:translateX(-30%)}50%{transform:translateX(30%)}}
-.log-line{animation:logIn .35s ease backwards}
-@keyframes logIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 #taskLog::-webkit-scrollbar{width:6px;height:6px}
 #taskLog::-webkit-scrollbar-thumb{background:#495057;border-radius:999px}
 

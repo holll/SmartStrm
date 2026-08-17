@@ -28,7 +28,7 @@ Go 语言实现的 STRM 生成工具（仅 STRM 相关功能），OpenList/AList
 │                                    ▼                               │
 │                 ┌──────────────────────────────────────────┐       │
 │                 │          driver.Driver (OpenList)        │       │
-│                 │  List / GetDirectLink / Remove / Rename  │       │
+│                 │         List / Remove / Rename           │       │
 │                 └──────────────────┬───────────────────────┘       │
 └────────────────────────────────────┼────────────────────────────────┘
                                      ▼
@@ -74,7 +74,7 @@ walkDir(根路径, "", mtime=0)                    递归：
        │        └─ 递归 walkDir
        ├─ 媒体文件（后缀∈media_ext 且 size≥阈值）
        │        ├─ 命名：默认 {name}.({ext}).strm → custom_strm_name 覆盖
-       │        ├─ 内容：{base}/d/{路径} 或 fid 模式 fs/get 直链
+       │        ├─ 内容：{base}/d/{路径}（直链解析交给 OpenList）
        │        ├─ URL 编码（可选）
        │        └─ content_replace 插件链修改内容
        │        └─ 写入本地文件 → remoteSet 登记
@@ -89,10 +89,9 @@ walkDir(根路径, "", mtime=0)                    递归：
 
 ### 2.1 生成内容格式
 
-| 模式 | 内容 | 说明 |
-|---|---|---|
-| path（默认） | `{strm_base}/d{远端路径}` | 直接走 OpenList `/d/` 下载直链，兼容性好 |
-| fid | `driver.GetDirectLink(path)` 返回的 `raw_url` | 调用 `/api/fs/get`，获取失败回退 path 模式 |
+| 内容 | 说明 |
+|---|---|
+| `{strm_base}/d{远端路径}` | 走 OpenList `/d/` 路径下载，直链解析由 OpenList 在请求时处理 |
 
 - `strm_base` 留空时使用存储自身地址（`存储.URL`）
 - `url_encode=true` 时对路径逐段 `url.PathEscape`（保留 `/`）
@@ -174,7 +173,6 @@ env.PluginConfig(p) = 合并后 [p.ID()] 对应配置
 ```go
 type Driver interface {
     List(ctx, path) ([]File, error)                    // 分页拉取目录
-    GetDirectLink(ctx, path) (string, error)           // /api/fs/get raw_url
     Remove(ctx, path) error                            // /api/fs/remove
     Rename(ctx, path, newName string) error            // /api/fs/rename（预留）
 }
@@ -199,7 +197,7 @@ type Driver interface {
 |---|---|---|
 | POST | `/api/login` | 登录，body `{username, password}` → `{token}` |
 | POST | `/api/logout` | 注销 |
-| GET / PUT | `/api/settings` | 读取 / 保存 STRM 设置（媒体后缀、阈值、复制后缀、save_dir、url_encode、gen_type、strm_base）与 Webhook 配置 |
+| GET / PUT | `/api/settings` | 读取 / 保存 STRM 设置（媒体后缀、阈值、复制后缀、save_dir、url_encode、strm_base）与 Webhook 配置 |
 | GET / POST | `/api/storages` | 存储列表 / 新增 |
 | PUT / DELETE | `/api/storages/:name` | 修改 / 删除存储 |
 | GET | `/api/storages/:name/list?path=/` | 存储浏览（驱动 List） |

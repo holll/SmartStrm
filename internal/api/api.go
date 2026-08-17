@@ -37,7 +37,11 @@ type Server struct {
 	tokens map[string]time.Time // token → 过期时间
 
 	sseID    int64
-	sseConns map[int64]sseConn // 活跃 SSE 连接（登出/改密时强制断开）
+	sseConns map[int64]sseConn // 活跃 SSE 日志流连接（登出/改密时强制断开）
+
+	stateID    int64
+	stateConns map[int64]stateConn // 活跃状态流连接（任务状态变化时广播）
+	stateTimer *time.Timer         // 状态广播节流定时器
 }
 
 // sseConn 一条活跃的 SSE 日志流连接
@@ -46,9 +50,26 @@ type sseConn struct {
 	tok    string // 建立连接时使用的 token
 }
 
+// stateConn 一条活跃的状态流连接
+type stateConn struct {
+	ch     chan struct{} // 缓冲 1：待广播的帧，满时合并
+	cancel context.CancelFunc
+	tok    string // 建立连接时使用的 token
+}
+
 // New 创建 API 服务
 func New(cfg *config.Config, mgr *task.Manager, database *db.DB) *Server {
-	return &Server{cfg: cfg, mgr: mgr, db: database, tokens: map[string]time.Time{}, sseConns: map[int64]sseConn{}}
+	s := &Server{
+		cfg:        cfg,
+		mgr:        mgr,
+		db:         database,
+		tokens:     map[string]time.Time{},
+		sseConns:   map[int64]sseConn{},
+		stateConns: map[int64]stateConn{},
+	}
+	// 任务状态变化（开始/结束/panic 收尾）时广播给状态流订阅者
+	mgr.SetOnState(s.onStateChanged)
+	return s
 }
 
 // audit 写入审计日志
@@ -104,6 +125,8 @@ func (s *Server) Register(r *gin.Engine) {
 	api.GET("/audit", s.recentAudits)
 	// 关于（版本 + 更新检查）
 	api.GET("/about", s.about)
+	// 任务状态推送（前端以此替代轮询）
+	api.GET("/events/stream", s.stateStream)
 	}
 }
 
@@ -113,6 +136,102 @@ func (s *Server) about(c *gin.Context) {
 	force := c.Query("refresh") == "1"
 	info := version.Check(c.Request.Context(), force)
 	c.JSON(http.StatusOK, info)
+}
+
+// ============ 任务状态推送（SSE） ============
+
+// onStateChanged 任务状态变化回调（Manager 钩子）。
+// 多次通知（RunAll 逐任务开始/结束）合并为 500ms 内一次广播
+func (s *Server) onStateChanged() {
+	s.mu.Lock()
+	if s.stateTimer != nil {
+		s.mu.Unlock()
+		return // 已排定广播
+	}
+	s.stateTimer = time.AfterFunc(500*time.Millisecond, s.broadcastState)
+	s.mu.Unlock()
+}
+
+// broadcastState 向全部状态流订阅者推送一帧（非阻塞，通道满时合并）
+func (s *Server) broadcastState() {
+	s.mu.Lock()
+	s.stateTimer = nil
+	for _, sc := range s.stateConns {
+		select {
+		case sc.ch <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+}
+
+// stateStream 任务状态 SSE 流：连接建立即推送一帧，此后任务状态变化时推送。
+// 帧内不携带数据，前端收到后按需拉取可见页面的最新状态
+func (s *Server) stateStream(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "不支持流式输出"})
+		return
+	}
+
+	ch := make(chan struct{}, 1)
+	sseCtx, cancel := context.WithCancel(c.Request.Context())
+	s.mu.Lock()
+	s.stateID++
+	id := s.stateID
+	s.stateConns[id] = stateConn{ch: ch, cancel: cancel, tok: strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.stateConns, id)
+		s.mu.Unlock()
+		cancel()
+	}()
+
+	// 连接建立即推送一帧，前端据此完成首次（重连后）刷新
+	writeStateEvent(c.Writer)
+	flusher.Flush()
+	for {
+		select {
+		case <-sseCtx.Done():
+			return
+		case <-ch:
+			writeStateEvent(c.Writer)
+			flusher.Flush()
+		}
+	}
+}
+
+// writeStateEvent 写一帧空数据的状态事件
+func writeStateEvent(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "event: state\ndata: {}\n\n")
+}
+
+// dropSSE 断开 SSE 连接（日志流与状态流）。tok 为空时断开全部（改密后旧会话失效），
+// 否则仅断开该 token 的连接（登出时其他会话不受影响）
+func (s *Server) dropSSE(tok string) {
+	s.mu.Lock()
+	var cancels []context.CancelFunc
+	for id, sc := range s.sseConns {
+		if tok == "" || sc.tok == tok {
+			cancels = append(cancels, sc.cancel)
+			delete(s.sseConns, id)
+		}
+	}
+	for id, sc := range s.stateConns {
+		if tok == "" || sc.tok == tok {
+			cancels = append(cancels, sc.cancel)
+			delete(s.stateConns, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
 }
 
 // ============ 审计记录 ============
@@ -249,16 +368,9 @@ func (s *Server) changePassword(c *gin.Context) {
 	}
 	s.mu.Lock()
 	s.tokens = map[string]time.Time{}
-	// 密码已变更：断开全部 SSE 连接，旧会话立即失效
-	cancels := make([]context.CancelFunc, 0, len(s.sseConns))
-	for id, sc := range s.sseConns {
-		cancels = append(cancels, sc.cancel)
-		delete(s.sseConns, id)
-	}
 	s.mu.Unlock()
-	for _, c := range cancels {
-		c()
-	}
+	// 密码已变更：断开全部 SSE 连接，旧会话立即失效
+	s.dropSSE("")
 	s.audit("admin", "password_change", "", "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -267,18 +379,9 @@ func (s *Server) logout(c *gin.Context) {
 	tok := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 	s.mu.Lock()
 	delete(s.tokens, tok)
-	// 断开该 token 的活跃 SSE 连接（其他会话不受影响）
-	var cancels []context.CancelFunc
-	for id, sc := range s.sseConns {
-		if sc.tok == tok {
-			cancels = append(cancels, sc.cancel)
-			delete(s.sseConns, id)
-		}
-	}
 	s.mu.Unlock()
-	for _, c := range cancels {
-		c()
-	}
+	// 断开该 token 的活跃 SSE 连接（其他会话不受影响）
+	s.dropSSE(tok)
 	s.audit("admin", "logout", "", "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

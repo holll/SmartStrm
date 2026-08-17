@@ -8,7 +8,6 @@ type STRMConfig struct {
 	CopyExt    []string `json:"copy_ext"`    // 复制到本地的文件后缀（刮削文件）
 	SaveDir    string   `json:"save_dir"`    // STRM 生成根目录（默认相对路径 ./strm）
 	URLEncode  bool     `json:"url_encode"`  // 对 STRM 内 URL 编码
-	GenType    string   `json:"gen_type"`    // 生成类型: path=路径兼容模式 fid=文件编号模式
 	StrmBase   string   `json:"strm_base"`   // 写入 STRM 的直链前缀（留空使用存储自身地址）
 }
 
@@ -74,7 +73,6 @@ func DefaultSTRM() STRMConfig {
 		CopyExt:   []string{"nfo", "jpg", "png", "ass", "srt"},
 		SaveDir:   "./strm",
 		URLEncode: true,
-		GenType:   "path",
 		StrmBase:  "",
 	}
 }
