@@ -167,8 +167,10 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 }
 
 // Remove 删除路径（文件或目录）
+// OpenList/AList 的 /api/fs/remove 要求请求体为路径数组，如 ["/a/b"]；
+// 传 {"path": ...} 对象会被服务端解析为空列表，报 "Empty file names"
 func (o *OpenList) Remove(ctx context.Context, path string) error {
-	_, err := o.post(ctx, "/api/fs/remove", map[string]any{"path": path})
+	_, err := o.post(ctx, "/api/fs/remove", []string{path})
 	return err
 }
 

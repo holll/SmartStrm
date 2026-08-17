@@ -1,9 +1,41 @@
 package driver
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// TestOpenListRemoveBody 验证 /api/fs/remove 请求体是路径数组，
+// 防止回归为 {"path":...} 对象导致 "Empty file names"
+func TestOpenListRemoveBody(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/fs/remove" {
+			t.Errorf("请求路径错误: %s", r.URL.Path)
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":200,"message":"success","data":null}`))
+	}))
+	defer srv.Close()
+
+	o := NewOpenList(srv.URL, "token")
+	if err := o.Remove(context.Background(), "/115/AV/M/MIDA-590"); err != nil {
+		t.Fatalf("Remove 失败: %v", err)
+	}
+	var arr []string
+	if err := json.Unmarshal(gotBody, &arr); err != nil {
+		t.Fatalf("请求体应为 JSON 数组，得到: %s (%v)", gotBody, err)
+	}
+	if len(arr) != 1 || arr[0] != "/115/AV/M/MIDA-590" {
+		t.Fatalf("请求体数组内容错误: %v", arr)
+	}
+}
 
 func TestParseOpenListTime(t *testing.T) {
 	cases := []struct {
