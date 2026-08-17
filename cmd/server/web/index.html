@@ -57,6 +57,7 @@
       <button id="nav-browse"   class="nav-link" onclick="showPage('browse')"><i class="bi bi-folder2-open"></i> 存储浏览</button>
       <button id="nav-plugins"  class="nav-link" onclick="showPage('plugins')"><i class="bi bi-plug"></i> 插件管理</button>
       <button id="nav-audit"    class="nav-link" onclick="showPage('audit')"><i class="bi bi-journal-check"></i> 审计日志</button>
+      <button id="nav-webhooklog" class="nav-link" onclick="showPage('webhooklog')"><i class="bi bi-broadcast"></i> Webhook 日志</button>
       <button id="nav-settings" class="nav-link" onclick="showPage('settings')"><i class="bi bi-gear"></i> 系统设置</button>
       <button id="nav-about"    class="nav-link" onclick="showPage('about')"><i class="bi bi-info-circle"></i> 关于</button>
     </nav>
@@ -221,6 +222,22 @@
           <table class="table table-hover">
             <thead><tr><th class="num">时间</th><th>用户</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
             <tbody id="auditRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Webhook 日志 -->
+    <div id="page-webhooklog" style="display:none">
+      <div class="card">
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-broadcast me-2 text-primary"></i>Webhook 日志 <span class="text-muted small fw-normal">收到的通知 / 执行动作 / 结果</span></h5>
+          <button class="btn btn-outline-secondary btn-sm" onclick="loadWebhookLogs()"><i class="bi bi-arrow-clockwise me-1"></i>刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th class="num">时间</th><th>类型</th><th>事件</th><th>目标</th><th>远端路径</th><th>结果</th><th>详情 / 原始通知</th></tr></thead>
+            <tbody id="webhookLogRows"></tbody>
           </table>
         </div>
       </div>

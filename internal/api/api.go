@@ -118,6 +118,7 @@ func (s *Server) Register(r *gin.Engine) {
 		api.GET("/webhook/info", s.webhookInfo)
 		api.PUT("/webhook", s.putWebhook)
 		api.POST("/webhook/regenerate", s.regenerateWebhook)
+		api.GET("/webhook/logs", s.webhookLogs)
 	// 运行历史 / 审计
 	api.GET("/runs", s.recentRuns)
 	api.GET("/runs/:id/log", s.runLog)
@@ -247,6 +248,24 @@ func (s *Server) recentAudits(c *gin.Context) {
 		limit = 100
 	}
 	list, err := s.db.RecentAudits(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// webhookLogs 最近 Webhook 处理日志（收到通知 / 执行动作 / 结果）
+func (s *Server) webhookLogs(c *gin.Context) {
+	if s.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	list, err := s.db.RecentWebhookLogs(limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

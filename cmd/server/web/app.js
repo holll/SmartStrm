@@ -82,7 +82,7 @@ async function doLogin() {
 function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; closeStateStream(); api('/api/logout','POST').catch(()=>{}); showLogin(); }
 
 function showPage(name) {
-  ['overview','tasks','storages','browse','plugins','audit','settings','about'].forEach(p => {
+  ['overview','tasks','storages','browse','plugins','audit','webhooklog','settings','about'].forEach(p => {
     document.getElementById('page-'+p).style.display = p===name ? '' : 'none';
     const navBtn = document.getElementById('nav-'+p);
     navBtn.classList.toggle('active', p===name);
@@ -106,6 +106,7 @@ function showPage(name) {
   if (name==='browse') loadBrowse();
   if (name==='plugins') loadPlugins();
   if (name==='audit') loadAudit();
+  if (name==='webhooklog') loadWebhookLogs();
   if (name==='settings') loadSettings();
   if (name==='about') loadAbout();
 }
@@ -907,6 +908,39 @@ async function loadAudit() {
   } catch(e) {}
 }
 
+// ============ Webhook 日志 ============
+const WH_RESULT = {
+  ok:['成功','success'], failed:['失败','danger'],
+  partial:['部分失败','warning'], skipped:['跳过','secondary']
+};
+async function loadWebhookLogs() {
+  try {
+    const list = (await api('/api/webhook/logs?limit=200')) || [];
+    const rows = document.getElementById('webhookLogRows');
+    if (!list.length) { rows.innerHTML = '<tr><td colspan="7" class="empty">暂无 Webhook 日志，收到通知后自动记录</td></tr>'; return; }
+    rows.innerHTML = list.map(l => {
+      const [resText, resCls] = WH_RESULT[l.result] || [l.result, 'secondary'];
+      const kind = l.kind === 'task'
+        ? '<span class="badge text-bg-info">任务</span>'
+        : '<span class="badge text-bg-primary">Emby</span>';
+      const payloadBlock = l.payload
+        ? `<details class="wh-payload"><summary>查看原始通知</summary><pre style="max-height:180px;overflow:auto;font-size:11px;padding:8px;background:var(--bg,#f6f6f6);border-radius:6px;white-space:pre-wrap;word-break:break-all">${esc(l.payload)}</pre></details>`
+        : '';
+      const detail = l.detail
+        ? `<div class="small text-danger" style="max-width:280px;word-break:break-all">${esc(l.detail)}</div>`
+        : '';
+      return `<tr>
+        <td class="num">${fmtTime(l.time)}</td>
+        <td>${kind}</td>
+        <td><code>${esc(ACTION_NAMES[l.action] || l.action)}</code><div class="small text-muted">${esc(l.event)}</div></td>
+        <td style="max-width:200px;word-break:break-all">${esc(l.target || '-')}</td>
+        <td style="max-width:200px;word-break:break-all;color:var(--muted)">${l.remote_path ? esc(l.remote_path) : '-'}</td>
+        <td><span class="badge text-bg-${resCls}">${resText}</span></td>
+        <td style="max-width:340px">${detail}${payloadBlock}</td></tr>`;
+    }).join('');
+  } catch(e) {}
+}
+
 // ============ 设置 ============
 async function loadSettings() {
   try {
@@ -1143,7 +1177,7 @@ async function loadAll() {
 
 // 初始化：hash 定位页面，无 hash 默认总览（等 app 显示后再切页，保证入场动画生效）
 (function init() {
-  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|settings|about)$/);
+  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|webhooklog|settings|about)$/);
   const target = m ? m[1] : 'overview';
   if (TOKEN) {
     api('/api/settings').then(() => { showApp(); showPage(target); loadAll(); }).catch(() => showLogin());

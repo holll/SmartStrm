@@ -41,6 +41,20 @@ type Audit struct {
 	Detail string    `json:"detail"`
 }
 
+// WebhookLog Webhook 处理日志（收到的通知 / 执行动作 / 结果）
+type WebhookLog struct {
+	ID         int64     `json:"id"`
+	Time       time.Time `json:"time"`
+	Kind       string    `json:"kind"`        // emby / task
+	Event      string    `json:"event"`       // Emby 事件类型或 task_trigger
+	Payload    string    `json:"payload"`     // 收到的完整通知 JSON（截断）
+	Action     string    `json:"action"`      // emby_delete / emby_delete_failed / task_trigger
+	Target     string    `json:"target"`      // Item.Path 或任务名
+	RemotePath string    `json:"remote_path"` // 映射后的远端路径
+	Result     string    `json:"result"`      // ok / failed / skipped
+	Detail     string    `json:"detail"`      // 错误信息或补充
+}
+
 // Open 打开（或创建）数据库并建表
 func Open(path string) (*DB, error) {
 	conn, err := sql.Open("sqlite", path)
@@ -91,6 +105,19 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(time)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action)`,
+		`CREATE TABLE IF NOT EXISTS webhook_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			time DATETIME NOT NULL,
+			kind TEXT NOT NULL,
+			event TEXT NOT NULL,
+			payload TEXT,
+			action TEXT NOT NULL,
+			target TEXT,
+			remote_path TEXT,
+			result TEXT NOT NULL,
+			detail TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_logs_time ON webhook_logs(time)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.conn.Exec(s); err != nil {
@@ -261,6 +288,44 @@ func (d *DB) RecentAudits(limit int) ([]Audit, error) {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, nil
+}
+
+// ============ webhook 日志 ============
+
+// webhookPayloadMax 入库 payload 截断长度，防止超大通知撑爆数据库
+const webhookPayloadMax = 2048
+
+// InsertWebhookLog 写入 webhook 处理日志
+func (d *DB) InsertWebhookLog(l WebhookLog) error {
+	if len(l.Payload) > webhookPayloadMax {
+		l.Payload = l.Payload[:webhookPayloadMax] + "…"
+	}
+	_, err := d.conn.Exec(`INSERT INTO webhook_logs (time, kind, event, payload, action, target, remote_path, result, detail)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().Format(timeFmt), l.Kind, l.Event, nullStr(l.Payload), l.Action,
+		nullStr(l.Target), nullStr(l.RemotePath), l.Result, nullStr(l.Detail))
+	return err
+}
+
+// RecentWebhookLogs 最近 webhook 日志
+func (d *DB) RecentWebhookLogs(limit int) ([]WebhookLog, error) {
+	rows, err := d.conn.Query(`SELECT id, time, kind, event, COALESCE(payload,''), action,
+		COALESCE(target,''), COALESCE(remote_path,''), result, COALESCE(detail,'')
+		FROM webhook_logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]WebhookLog, 0)
+	for rows.Next() {
+		var l WebhookLog
+		if err := rows.Scan(&l.ID, &l.Time, &l.Kind, &l.Event, &l.Payload, &l.Action,
+			&l.Target, &l.RemotePath, &l.Result, &l.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
 	}
 	return out, nil
 }

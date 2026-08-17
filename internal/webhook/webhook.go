@@ -38,6 +38,13 @@ func (h *Handler) audit(user, action, target, detail string) {
 	}
 }
 
+// logWebhook 写入 webhook 处理日志（收到的通知 / 执行动作 / 结果）
+func (h *Handler) logWebhook(l db.WebhookLog) {
+	if h.db != nil {
+		_ = h.db.InsertWebhookLog(l)
+	}
+}
+
 // Register 注册路由
 // 任务触发与 Emby 删除同步共用 /webhook/{token}，按请求体内容自动分派；
 // /webhook/emby/{token} 保留兼容旧地址（已在 Emby 中配置的无需改动）
@@ -84,17 +91,32 @@ func (h *Handler) trigger(c *gin.Context, body []byte) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 strmtask 字段"})
 		return
 	}
+	var names []string
 	var failed []string
 	for _, name := range strings.Split(tasks, ",") {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
+		names = append(names, name)
 		if err := h.mgr.Run(name); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", name, err))
 		}
 	}
+	result := "ok"
+	if len(failed) > 0 {
+		if len(failed) < len(names) {
+			result = "partial"
+		} else {
+			result = "failed"
+		}
+	}
 	h.audit("webhook", "task_trigger", tasks, strings.Join(failed, ";"))
+	h.logWebhook(db.WebhookLog{
+		Kind: "task", Event: "task_trigger", Payload: string(body),
+		Action: "task_trigger", Target: tasks,
+		Result: result, Detail: strings.Join(failed, ";"),
+	})
 	if len(failed) > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": strings.Join(failed, "; ")})
 		return
@@ -115,7 +137,17 @@ type embyWebhook struct {
 // embyDelete Emby 删除通知 → 删除远端存储文件
 func (h *Handler) embyDelete(c *gin.Context, body []byte, wh embyWebhook) {
 	es := h.cfg.Webhook.EmbyDeleteSync
+	// 记录完整处理日志：收到的通知、动作、远端路径、结果
+	logWebhook := func(action, target, remote, result, detail string) {
+		h.logWebhook(db.WebhookLog{
+			Kind: "emby", Event: wh.Event, Payload: string(body),
+			Action: action, Target: target, RemotePath: remote,
+			Result: result, Detail: detail,
+		})
+	}
+
 	if !es.Enabled {
+		logWebhook("emby_delete", wh.Item.Path, "", "skipped", "Emby 删除同步未启用")
 		c.String(http.StatusOK, "ignored: emby 删除同步未启用")
 		return
 	}
@@ -124,31 +156,37 @@ func (h *Handler) embyDelete(c *gin.Context, body []byte, wh embyWebhook) {
 	switch wh.Event {
 	case "item.deleted", "ItemDeleted", "library.deleted":
 	default:
+		logWebhook("emby_delete", wh.Item.Path, "", "skipped", "不支持的事件类型: "+wh.Event)
 		c.String(http.StatusOK, "ignored")
 		return
 	}
 	if wh.Item.Path == "" {
+		logWebhook("emby_delete", "", "", "skipped", "通知缺少 Item.Path（整库删除事件）")
 		c.String(http.StatusOK, "ok")
 		return
 	}
 
-	if err := h.removeRemote(wh.Item.Path); err != nil {
+	remoteDir, err := h.removeRemote(wh.Item.Path)
+	if err != nil {
 		h.audit("webhook", "emby_delete_failed", wh.Item.Path, err.Error())
+		logWebhook("emby_delete_failed", wh.Item.Path, remoteDir, "failed", err.Error())
 		log.Printf("Emby 删除同步失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	h.audit("webhook", "emby_delete", wh.Item.Path, "")
+	logWebhook("emby_delete", wh.Item.Path, remoteDir, "ok", "已删除远端路径")
 	c.String(http.StatusOK, "ok")
 }
 
-// removeRemote 将 Emby 中的 strm 路径映射为远端路径并删除
-func (h *Handler) removeRemote(embyPath string) error {
+// removeRemote 将 Emby 中的 strm 路径映射为远端路径并删除；
+// 返回映射后的远端路径（即使删除失败也返回，便于日志记录）
+func (h *Handler) removeRemote(embyPath string) (string, error) {
 	es := h.cfg.Webhook.EmbyDeleteSync
 
 	// 1. 校验前缀：strm 目录在 Emby 中的路径
 	if !strings.HasPrefix(embyPath, es.StrmInEmby) {
-		return fmt.Errorf("非法路径，不在 strm 目录内: %s", embyPath)
+		return "", fmt.Errorf("非法路径，不在 strm 目录内: %s", embyPath)
 	}
 	relative := strings.TrimPrefix(embyPath, es.StrmInEmby)
 	relative = strings.TrimPrefix(relative, "/")
@@ -171,7 +209,7 @@ func (h *Handler) removeRemote(embyPath string) error {
 		}
 	}
 	if !allowed {
-		return fmt.Errorf("超出允许删除范围: %s", remoteDir)
+		return remoteDir, fmt.Errorf("超出允许删除范围: %s", remoteDir)
 	}
 
 	// 5. 调用存储驱动删除
@@ -183,15 +221,15 @@ func (h *Handler) removeRemote(embyPath string) error {
 		}
 	}
 	if storageCfg == nil {
-		return fmt.Errorf("删除存储 %s 不存在", es.Storage)
+		return remoteDir, fmt.Errorf("删除存储 %s 不存在", es.Storage)
 	}
 	drv, err := driver.New(storageCfg.Driver, storageCfg.URL, storageCfg.Token)
 	if err != nil {
-		return err
+		return remoteDir, err
 	}
 	if err := drv.Remove(context.Background(), remoteDir); err != nil {
-		return fmt.Errorf("删除 %s 失败: %w", remoteDir, err)
+		return remoteDir, fmt.Errorf("删除 %s 失败: %w", remoteDir, err)
 	}
 	log.Printf("Emby 删除同步: %s -> %s", embyPath, remoteDir)
-	return nil
+	return remoteDir, nil
 }
