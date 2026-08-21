@@ -2,7 +2,7 @@
 
 Go 语言实现的 STRM 生成工具，仅保留 STRM 相关功能：OpenList/AList 网盘目录 → 本地 `.strm` 文件映射，供 Emby/Jellyfin 等媒体服务器入库播放。
 
-> 技术细节见 [docs/architecture.md](docs/architecture.md)
+> 技术细节见 [docs/architecture.md](docs/architecture.md)，接口对接见 [docs/api.md](docs/api.md)
 > 开源协议：MIT（见 [LICENSE](LICENSE)）
 
 ## 功能

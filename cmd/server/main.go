@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -16,7 +15,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -119,23 +117,19 @@ func main() {
 	log.Printf("SmartStrm-Go 启动，监听 %s（管理页 http://localhost%s）", addr, addr)
 	log.Printf("Webhook 触发地址: /webhook/%s", cfg.Webhook.Token)
 
-	// 优雅关机：收到 SIGINT/SIGTERM 后停止接收新请求，等待当前请求完成
+	// HTTP 服务在后台 goroutine 运行，主协程等待退出信号
 	srv := &http.Server{Addr: addr, Handler: r}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("服务启动失败: %v", err)
 		}
 	}()
+	// Ctrl+C 直接退出，不做优雅关闭等待（SSE 长连接等会拖慢退出）；
+	// 用 return 而非 os.Exit，让 defer（数据库 Close 等）正常收尾
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
-	log.Println("收到退出信号，正在关闭…")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("关闭超时: %v", err)
-	}
-	log.Println("已退出")
+	log.Println("收到退出信号，直接退出")
 }
 
 // initAdmin 账号初始化（固定 admin，仅首次创建）

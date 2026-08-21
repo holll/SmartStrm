@@ -127,6 +127,9 @@ func (o *OpenList) post(ctx context.Context, api string, payload any) (apiResp, 
 	return resp, nil
 }
 
+// listPerPage 单页条数（OpenList 文档 per_page 上限为 100）
+const listPerPage = 100
+
 // List 列出目录内容，处理分页
 func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 	var files []File
@@ -136,7 +139,7 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 			"path":     path,
 			"password": "",
 			"page":     page,
-			"per_page": 200,
+			"per_page": listPerPage,
 			"refresh":  false,
 		})
 		if err != nil {
@@ -154,11 +157,11 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 			f.Modified = parseOpenListTime(c.Modified)
 			files = append(files, f)
 		}
-		// 服务端返回 total 时用它判断是否还有下一页，避免恰好 200 条时的多余空请求
-		if d.Total > 0 && int64(page)*200 >= d.Total {
+		// 服务端返回 total 时用它判断是否还有下一页，避免恰好整页时的多余空请求
+		if d.Total > 0 && int64(page)*listPerPage >= d.Total {
 			break
 		}
-		if len(d.Content) < 200 {
+		if len(d.Content) < listPerPage {
 			break
 		}
 		page++
@@ -167,10 +170,11 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 }
 
 // Remove 删除路径（文件或目录）
-// OpenList/AList 的 /api/fs/remove 要求请求体为路径数组，如 ["/a/b"]；
-// 传 {"path": ...} 对象会被服务端解析为空列表，报 "Empty file names"
+// OpenList 的 /api/fs/remove 要求请求体为 {"dir": 父目录, "names": [名称]}，
+// 不是 AList 旧版的路径数组；传错格式会报 "Empty file names"
 func (o *OpenList) Remove(ctx context.Context, path string) error {
-	_, err := o.post(ctx, "/api/fs/remove", []string{path})
+	dir, name := SplitPath(path)
+	_, err := o.post(ctx, "/api/fs/remove", map[string]any{"dir": dir, "names": []string{name}})
 	return err
 }
 
@@ -178,6 +182,30 @@ func (o *OpenList) Remove(ctx context.Context, path string) error {
 func (o *OpenList) Rename(ctx context.Context, path, newName string) error {
 	_, err := o.post(ctx, "/api/fs/rename", map[string]any{"path": path, "name": newName})
 	return err
+}
+
+// Mkdir 创建目录
+func (o *OpenList) Mkdir(ctx context.Context, path string) error {
+	_, err := o.post(ctx, "/api/fs/mkdir", map[string]any{"path": path})
+	return err
+}
+
+// Move 移动条目（names 为 srcDir 下的条目名列表）
+func (o *OpenList) Move(ctx context.Context, srcDir, dstDir string, names []string) error {
+	_, err := o.post(ctx, "/api/fs/move", map[string]any{"src_dir": srcDir, "dst_dir": dstDir, "names": names})
+	return err
+}
+
+// SplitPath 把完整路径拆为父目录与条目名；根级父目录为 "/"
+func SplitPath(path string) (dir, name string) {
+	path = strings.TrimSuffix(path, "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		if i == 0 {
+			return "/", path[1:]
+		}
+		return path[:i], path[i+1:]
+	}
+	return "/", path
 }
 
 // DownloadURL 构造路径兼容模式的直链 URL（OpenList /d/ 下载路径）

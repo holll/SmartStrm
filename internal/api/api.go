@@ -22,6 +22,7 @@ import (
 	"smartstrm/internal/config"
 	"smartstrm/internal/db"
 	"smartstrm/internal/driver"
+	"smartstrm/internal/organize"
 	"smartstrm/internal/plugins"
 	"smartstrm/internal/task"
 	"smartstrm/internal/version"
@@ -97,6 +98,8 @@ func (s *Server) Register(r *gin.Engine) {
 		api.DELETE("/storages/:name", s.deleteStorage)
 		// 存储浏览
 		api.GET("/storages/:name/list", s.browseStorage)
+		// 目录整理（cli 内部整理 / 移动到分类目录）
+		api.POST("/organize", s.organize)
 		// 任务
 		api.GET("/tasks", s.listTasks)
 		api.POST("/tasks", s.addTask)
@@ -568,6 +571,48 @@ func (s *Server) browseStorage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, files)
+}
+
+// organizeReq 目录整理请求
+type organizeReq struct {
+	Storage   string `json:"storage"`
+	Path      string `json:"path"`
+	Mode      string `json:"mode"`     // organize / move / all
+	IDMode    string `json:"id_mode"`  // AV / FC2
+	DryRun    bool   `json:"dry_run"`  // true 仅预览计划
+	Overwrite bool   `json:"overwrite"`
+}
+
+// organize 执行目录整理（cli 内部整理 + 移动到分类目录）
+func (s *Server) organize(c *gin.Context) {
+	var req organizeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数解析失败"})
+		return
+	}
+	if req.Storage == "" || req.Path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 storage 或 path"})
+		return
+	}
+	st := findStorage(s.cfg, req.Storage)
+	if st == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "存储不存在"})
+		return
+	}
+	drv := driver.NewOpenList(st.URL, st.Token)
+	res, err := organize.Run(c.Request.Context(), drv, organize.Options{
+		TargetPath: req.Path,
+		Mode:       req.Mode,
+		IDMode:     req.IDMode,
+		DryRun:     req.DryRun,
+		Overwrite:  req.Overwrite,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
+	c.JSON(http.StatusOK, res)
 }
 
 // ============ 任务 ============

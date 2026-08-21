@@ -10,30 +10,86 @@ import (
 	"time"
 )
 
-// TestOpenListRemoveBody 验证 /api/fs/remove 请求体是路径数组，
-// 防止回归为 {"path":...} 对象导致 "Empty file names"
-func TestOpenListRemoveBody(t *testing.T) {
-	var gotBody []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/fs/remove" {
-			t.Errorf("请求路径错误: %s", r.URL.Path)
-		}
-		gotBody, _ = io.ReadAll(r.Body)
+// openlistTestServer 返回一个记录请求 body、按 path 分发且固定返回 code=200 的假 OpenList 服务
+func openlistTestServer(t *testing.T, bodies map[string][]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies[r.URL.Path] = b
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"code":200,"message":"success","data":null}`))
 	}))
+}
+
+// TestOpenListRemoveBody 验证 /api/fs/remove 请求体为 {"dir", "names"} 对象，
+// 防止回归为路径数组导致 "Empty file names"
+func TestOpenListRemoveBody(t *testing.T) {
+	bodies := map[string][]byte{}
+	srv := openlistTestServer(t, bodies)
 	defer srv.Close()
 
 	o := NewOpenList(srv.URL, "token")
 	if err := o.Remove(context.Background(), "/115/AV/M/MIDA-590"); err != nil {
 		t.Fatalf("Remove 失败: %v", err)
 	}
-	var arr []string
-	if err := json.Unmarshal(gotBody, &arr); err != nil {
-		t.Fatalf("请求体应为 JSON 数组，得到: %s (%v)", gotBody, err)
+	var body map[string]any
+	if err := json.Unmarshal(bodies["/api/fs/remove"], &body); err != nil {
+		t.Fatalf("请求体解析失败: %s (%v)", bodies["/api/fs/remove"], err)
 	}
-	if len(arr) != 1 || arr[0] != "/115/AV/M/MIDA-590" {
-		t.Fatalf("请求体数组内容错误: %v", arr)
+	if body["dir"] != "/115/AV/M" {
+		t.Fatalf("dir 错误: %v", body["dir"])
+	}
+	names, ok := body["names"].([]any)
+	if !ok || len(names) != 1 || names[0] != "MIDA-590" {
+		t.Fatalf("names 错误: %v", body["names"])
+	}
+}
+
+// TestOpenListMkdirMove 验证 mkdir / move 请求体格式
+func TestOpenListMkdirMove(t *testing.T) {
+	bodies := map[string][]byte{}
+	srv := openlistTestServer(t, bodies)
+	defer srv.Close()
+
+	o := NewOpenList(srv.URL, "token")
+	ctx := context.Background()
+
+	if err := o.Mkdir(ctx, "/115/AV/M/MIDA-590"); err != nil {
+		t.Fatalf("Mkdir 失败: %v", err)
+	}
+	var mk map[string]any
+	_ = json.Unmarshal(bodies["/api/fs/mkdir"], &mk)
+	if mk["path"] != "/115/AV/M/MIDA-590" {
+		t.Fatalf("mkdir path 错误: %v", mk["path"])
+	}
+
+	if err := o.Move(ctx, "/115/AV/M", "/115/AV/T", []string{"MDX-123"}); err != nil {
+		t.Fatalf("Move 失败: %v", err)
+	}
+	var mv map[string]any
+	_ = json.Unmarshal(bodies["/api/fs/move"], &mv)
+	if mv["src_dir"] != "/115/AV/M" || mv["dst_dir"] != "/115/AV/T" {
+		t.Fatalf("move 目录错误: %v", mv)
+	}
+	names, ok := mv["names"].([]any)
+	if !ok || len(names) != 1 || names[0] != "MDX-123" {
+		t.Fatalf("move names 错误: %v", mv["names"])
+	}
+}
+
+// TestSplitDirPath 验证路径拆分
+func TestSplitDirPath(t *testing.T) {
+	cases := []struct{ in, dir, name string }{
+		{"/115/AV/M/MIDA-590", "/115/AV/M", "MIDA-590"},
+		{"/115/AV/M/MIDA-590/", "/115/AV/M", "MIDA-590"},
+		{"/MIDA-590", "/", "MIDA-590"},
+		{"/", "/", ""},
+		{"MIDA-590", "/", "MIDA-590"},
+	}
+	for _, c := range cases {
+		dir, name := SplitPath(c.in)
+		if dir != c.dir || name != c.name {
+			t.Errorf("SplitPath(%q) = (%q,%q), 期望 (%q,%q)", c.in, dir, name, c.dir, c.name)
+		}
 	}
 }
 

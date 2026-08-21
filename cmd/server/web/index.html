@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300a2e9'/%3E%3Ctext x='32' y='42' font-family='Arial' font-size='28' font-weight='bold' fill='white' text-anchor='middle'%3ESS%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.6/css/bootstrap.min.css">
-<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
+<link rel="stylesheet" href="/static/bootstrap.min.css">
+<link rel="stylesheet" href="/static/bootstrap-icons.min.css">
 <link rel="stylesheet" href="/style.css">
 <title>SmartStrm-Go</title>
 </head>
@@ -51,18 +52,22 @@
       <div class="sidebar-brand"><span class="logo-icon-sm"><i class="bi bi-film"></i></span>SmartStrm-Go</div>
     </div>
     <nav class="nav flex-column sidebar-nav">
+      <div class="nav-group-label">核心</div>
       <button id="nav-overview" class="nav-link active" aria-current="page" onclick="showPage('overview')"><i class="bi bi-grid"></i> 总览</button>
       <button id="nav-tasks"    class="nav-link" onclick="showPage('tasks')"><i class="bi bi-list-task"></i> 任务管理</button>
       <button id="nav-storages" class="nav-link" onclick="showPage('storages')"><i class="bi bi-hdd-network"></i> 存储管理</button>
       <button id="nav-browse"   class="nav-link" onclick="showPage('browse')"><i class="bi bi-folder2-open"></i> 存储浏览</button>
+      <div class="nav-group-label">工具</div>
+      <button id="nav-organize" class="nav-link" onclick="showPage('organize')"><i class="bi bi-folder-symlink"></i> 目录整理</button>
       <button id="nav-plugins"  class="nav-link" onclick="showPage('plugins')"><i class="bi bi-plug"></i> 插件管理</button>
+      <div class="nav-group-label">系统</div>
       <button id="nav-audit"    class="nav-link" onclick="showPage('audit')"><i class="bi bi-journal-check"></i> 审计日志</button>
       <button id="nav-webhooklog" class="nav-link" onclick="showPage('webhooklog')"><i class="bi bi-broadcast"></i> Webhook 日志</button>
       <button id="nav-settings" class="nav-link" onclick="showPage('settings')"><i class="bi bi-gear"></i> 系统设置</button>
       <button id="nav-about"    class="nav-link" onclick="showPage('about')"><i class="bi bi-info-circle"></i> 关于</button>
     </nav>
     <div class="sidebar-footer">
-      <p class="text-muted small mb-3 text-center">SmartStrm-Go <span class="badge rounded-pill text-bg-light border">Go</span></p>
+      <p class="text-muted small mb-3 text-center">STRM 媒体文件管理工具</p>
       <button class="btn btn-outline-danger w-100" onclick="doLogout()"><i class="bi bi-box-arrow-right me-2"></i>退出</button>
     </div>
   </header>
@@ -204,6 +209,43 @@
           <div class="pt-2 border-top"><small class="opacity-50" id="browseCount"></small></div>
         </div>
       </div>
+    </div>
+
+    <!-- 目录整理 -->
+    <div id="page-organize" style="display:none">
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-folder-symlink me-2 text-primary"></i>目录整理 <span class="text-muted small fw-normal">参考 alist_organizer：cli 内部整理 + 移动到 AV/首字母 分类目录</span></h5></div>
+        <div class="card-body">
+          <div class="form-row"><label for="org-storage">存储</label><select class="form-select" id="org-storage"></select></div>
+          <div class="form-row"><label for="org-path">目标目录</label><input type="text" class="form-control" id="org-path" placeholder="/115/AV-cli" spellcheck="false"></div>
+          <div class="form-row"><label for="org-mode">模式</label>
+            <select class="form-select" id="org-mode">
+              <option value="all">all（整理 + 移动分类）</option>
+              <option value="organize">organize（仅 cli 内部整理）</option>
+              <option value="move">move（仅移动分类，只适用 AV）</option>
+            </select>
+            <div class="tip">move 只把已整理好的番号文件夹移动到 AV/首字母/；FC2 只支持 organize</div>
+          </div>
+          <div class="form-row"><label for="org-idmode">番号模式</label>
+            <select class="form-select" id="org-idmode" style="max-width:200px"><option value="AV">AV</option><option value="FC2">FC2</option></select>
+          </div>
+          <div class="check-row"><input type="checkbox" class="form-check-input me-2" id="org-overwrite" checked><label class="form-check-label" for="org-overwrite">目标同名存在时删除后覆盖</label><div class="tip ms-1">115 删除进回收站，可恢复</div></div>
+          <div class="d-flex gap-2 mt-2">
+            <button class="btn btn-outline-secondary" id="orgPlanBtn" onclick="organizeRun(true)"><i class="bi bi-eye me-1"></i>预览计划</button>
+            <button class="btn btn-primary" id="orgRunBtn" onclick="organizeRun(false)"><i class="bi bi-lightning me-1"></i>执行</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-list-check me-2 text-primary"></i>计划</h5><span class="text-muted small" id="orgPlanCount"></span></div>
+        <div class="table-wrap">
+          <table class="table table-hover">
+            <thead><tr><th>原路径</th><th>新路径</th></tr></thead>
+            <tbody id="orgPlanRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="alert alert-danger" id="orgErrors" style="display:none"></div>
     </div>
 
     <!-- 插件管理 -->

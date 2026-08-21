@@ -82,7 +82,7 @@ async function doLogin() {
 function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; closeStateStream(); api('/api/logout','POST').catch(()=>{}); showLogin(); }
 
 function showPage(name) {
-  ['overview','tasks','storages','browse','plugins','audit','webhooklog','settings','about'].forEach(p => {
+  ['overview','tasks','storages','browse','organize','plugins','audit','webhooklog','settings','about'].forEach(p => {
     document.getElementById('page-'+p).style.display = p===name ? '' : 'none';
     const navBtn = document.getElementById('nav-'+p);
     navBtn.classList.toggle('active', p===name);
@@ -104,6 +104,7 @@ function showPage(name) {
   if (name==='tasks') loadTasks();
   if (name==='storages') loadStorages();
   if (name==='browse') loadBrowse();
+  if (name==='organize') loadOrganize();
   if (name==='plugins') loadPlugins();
   if (name==='audit') loadAudit();
   if (name==='webhooklog') loadWebhookLogs();
@@ -941,6 +942,44 @@ async function loadWebhookLogs() {
   } catch(e) {}
 }
 
+// ============ 目录整理 ============
+async function loadOrganize() {
+  if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
+  const sel = document.getElementById('org-storage');
+  sel.innerHTML = (STORAGES||[]).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+}
+async function organizeRun(dryRun) {
+  const planBtn = document.getElementById('orgPlanBtn');
+  const runBtn = document.getElementById('orgRunBtn');
+  const btn = dryRun ? planBtn : runBtn;
+  btn.disabled = true; const old = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' + (dryRun ? '预览中…' : '执行中…');
+  try {
+    const res = await api('/api/organize', 'POST', {
+      storage: document.getElementById('org-storage').value,
+      path: document.getElementById('org-path').value.trim(),
+      mode: document.getElementById('org-mode').value,
+      id_mode: document.getElementById('org-idmode').value,
+      dry_run: dryRun,
+      overwrite: document.getElementById('org-overwrite').checked,
+    });
+    const rows = document.getElementById('orgPlanRows');
+    document.getElementById('orgPlanCount').textContent = `共 ${(res.plan||[]).length} 项` + (dryRun ? '（预览）' : '（已执行）');
+    rows.innerHTML = (res.plan||[]).map(p => `<tr><td style="word-break:break-all">${esc(p.old)}</td><td style="word-break:break-all">${esc(p.new)}</td></tr>`).join('')
+      || '<tr><td colspan="2" class="empty">无可整理项</td></tr>';
+    const errBox = document.getElementById('orgErrors');
+    if (res.errors && res.errors.length) {
+      errBox.style.display = ''; errBox.style.whiteSpace = 'pre-wrap';
+      errBox.innerHTML = '<strong>处理失败：</strong><div>' + res.errors.map(esc).join('\n') + '</div>';
+    } else { errBox.style.display = 'none'; }
+    toast(dryRun ? '预览完成' : '执行完成');
+  } catch(e) {
+    const errBox = document.getElementById('orgErrors');
+    errBox.style.display = ''; errBox.innerHTML = esc(e.message || String(e));
+    toast(e.message || String(e), 'danger');
+  } finally { btn.disabled = false; btn.innerHTML = old; }
+}
+
 // ============ 设置 ============
 async function loadSettings() {
   try {
@@ -1177,7 +1216,7 @@ async function loadAll() {
 
 // 初始化：hash 定位页面，无 hash 默认总览（等 app 显示后再切页，保证入场动画生效）
 (function init() {
-  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|webhooklog|settings|about)$/);
+  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|organize|plugins|audit|webhooklog|settings|about)$/);
   const target = m ? m[1] : 'overview';
   if (TOKEN) {
     api('/api/settings').then(() => { showApp(); showPage(target); loadAll(); }).catch(() => showLogin());
