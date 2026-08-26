@@ -214,17 +214,17 @@
     <!-- 目录整理 -->
     <div id="page-organize" style="display:none">
       <div class="card">
-        <div class="card-head"><h5 class="mb-0"><i class="bi bi-folder-symlink me-2 text-primary"></i>目录整理 <span class="text-muted small fw-normal">参考 alist_organizer：cli 内部整理 + 移动到 AV/首字母 分类目录</span></h5></div>
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-folder-symlink me-2 text-primary"></i>目录整理 <span class="text-muted small fw-normal">散落视频识别番号，一步归入分类库：AV→{目录}/首字母/番号/，FC2→{目录}/番号/</span></h5></div>
         <div class="card-body">
           <div class="form-row"><label for="org-storage">存储</label><select class="form-select" id="org-storage"></select></div>
           <div class="form-row"><label for="org-path">目标目录</label><input type="text" class="form-control" id="org-path" placeholder="/115/AV-cli" spellcheck="false"></div>
           <div class="form-row"><label for="org-mode">模式</label>
             <select class="form-select" id="org-mode">
-              <option value="all">all（整理 + 移动分类）</option>
-              <option value="organize">organize（仅 cli 内部整理）</option>
+              <option value="all">all（整理 + 移动遗留分类）</option>
+              <option value="organize">organize（仅整理入库）</option>
               <option value="move">move（仅移动分类）</option>
             </select>
-            <div class="tip">move 把已整理好的番号文件夹移入分类库：AV→{目录}/首字母/，FC2→{目录}/（如 /115/AV-cli→/115/AV/A，/115/FC2-cli→/115/FC2）</div>
+            <div class="tip">organize/all 一步入库：如 /115/AV-cli/SVVRT-067-U.mp4 → /115/AV/S/SVVRT-067-U；/115/FC2-cli/xxx.mp4 → /115/FC2/xxx。move 仅把已整理好的番号文件夹移入分类库</div>
           </div>
           <div class="form-row"><label for="org-idmode">番号模式</label>
             <select class="form-select" id="org-idmode" style="max-width:200px"><option value="AV">AV</option><option value="FC2">FC2</option></select>

@@ -47,7 +47,7 @@ Go 语言实现的 STRM 生成工具（仅 STRM 相关功能）：OpenList/AList
 | 调度 | `internal/task` | 任务模型、Cron 调度（robfig/cron）、运行状态、日志缓冲 |
 | 核心 | `internal/generator` | STRM 生成主流程（扫描→过滤→插件链→生成/清理） |
 | 扩展 | `internal/plugins` | 插件接口 + 5 个内置插件 |
-| 整理 | `internal/organize` | 网盘目录整理：番号识别、命名规范化、cli 整理 + 按首字母分类移动 |
+| 整理 | `internal/organize` | 网盘目录整理：番号识别、命名规范化、一步归入分类库（AV 按首字母 / FC2 根） |
 | 驱动 | `internal/driver` | 存储驱动抽象与 OpenList 实现（含按 base 共享的 API 限速器） |
 | 数据 | `internal/db` | SQLite 存储层：配置表 + 运行/日志/审计/webhook 日志 + 目录缓存 |
 | 版本 | `internal/version` | 构建版本信息 + GitHub 更新检查（10min 缓存） |
@@ -231,9 +231,9 @@ type Client interface {
 
 | Mode | 行为 |
 |---|---|
-| `organize` | **cli 内部整理**：遍历目录下散落的视频文件，识别番号后归入 `{目标目录}/{番号}/`，同时重命名为规范名 |
+| `organize` | **一步入库**：遍历目录下散落的视频文件，识别番号后直接归入分类库（AV→`{目标目录去 -cli}/{首字母}/{番号}/`，FC2→`{目标目录去 -cli}/{番号}/`），同时重命名为规范名 |
 | `move` | **分类移动**：把已整理好的番号文件夹移入分类库（AV→`{目标目录去 -cli}/{首字母}/`，FC2→`{目标目录去 -cli}/`） |
-| `all` | 先 `organize` 再 `move`（move 前重新扫描以反映整理后状态） |
+| `all` | organize 一步入库 + 移动 TargetPath 下遗留的标准番号文件夹（执行后重新扫描，预览只展示一步入库） |
 
 ### 5.2 番号识别与命名规则（rules.go）
 

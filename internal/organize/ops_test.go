@@ -151,7 +151,7 @@ func has(m *mockFS, dir, name string) bool {
 	return ok
 }
 
-// TestOrganizeDryRun 预览不落地
+// TestOrganizeDryRun 预览不落地，且必须包含移动分类库的最终路径（修复前 move 阶段缺失）
 func TestOrganizeDryRun(t *testing.T) {
 	m := newMockFS()
 	seedCli(t, m)
@@ -163,9 +163,28 @@ func TestOrganizeDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// 干运行应生成完整计划（整理 + 移动）
-	if len(res.Plan) == 0 {
-		t.Fatal("dry-run 应有计划")
+	// 干运行应生成一步到位的分类项：/115/AV/<首字母>/<番号文件夹>（3 个散落文件各 1 行）
+	if len(res.Plan) != 3 {
+		t.Fatalf("dry-run 应有 3 个一步入库项，got %d: %v", len(res.Plan), res.Plan)
+	}
+	hasMove := map[string]bool{
+		"/115/AV/V/VRKM-919":  false,
+		"/115/AV/H/HMN-035":   false,
+		"/115/AV/A/ABC-123-U": false,
+	}
+	for _, p := range res.Plan {
+		// 新路径应落在分类库，不得是 cli 内部中间路径
+		if strings.Contains(p.New, "/AV-cli/") {
+			t.Fatalf("预览出现 cli 中间路径，应一步入库: %s", p.New)
+		}
+		if _, ok := hasMove[p.New]; ok {
+			hasMove[p.New] = true
+		}
+	}
+	for want, ok := range hasMove {
+		if !ok {
+			t.Fatalf("dry-run 预览缺少分类项: %s", want)
+		}
 	}
 	// 且文件不应被移动
 	if has(m, "/115/AV-cli", "hmn00035.mp4") == false {

@@ -78,11 +78,14 @@ func Run(ctx context.Context, client Client, o Options) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		// organize 已直接入库（AV→{库}/{首字母}/{番号}，FC2→{库}/{番号}），
+		// 预览只展示最终路径；执行后再把 TargetPath 下遗留的标准番号文件夹一并移入（兼容已有整理产物）
 		res.Plan = org.organizeInside(ctx, items)
-		// 移动前重新扫描，反映整理后的状态（organize 会新建番号文件夹）
-		items2, err := org.client.List(ctx, o.TargetPath)
-		if err == nil {
-			res.Plan = append(res.Plan, org.moveToLibrary(ctx, items2)...)
+		if !o.DryRun {
+			items2, err := org.client.List(ctx, o.TargetPath)
+			if err == nil {
+				res.Plan = append(res.Plan, org.moveToLibrary(ctx, items2)...)
+			}
 		}
 	default:
 		return nil, fmt.Errorf("未知模式: %s", o.Mode)
@@ -223,8 +226,9 @@ func (o *Organizer) organizeInside(ctx context.Context, items []driver.File) []M
 		folderName, newName := buildTargetName(ext, baseCode, label, isSingle, o.opts.IDMode)
 
 		oldAbs := joinPath(o.opts.TargetPath, oldName)
-		cliFolder := joinPath(o.opts.TargetPath, folderName)
-		cliNewAbs := joinPath(cliFolder, newName)
+		// 一步入库：目标番号文件夹直接落在分类库（AV→{库}/{首字母}/{番号}，FC2→{库}/{番号}）
+		cliFolder := joinPath(buildLibraryBasePath(o.opts.TargetPath, baseCode, o.opts.IDMode), folderName)
+		cliNewAbs := cliFolder
 
 		if o.opts.DryRun {
 			plan = append(plan, MoveOp{Old: oldAbs, New: cliNewAbs})
