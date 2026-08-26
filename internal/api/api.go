@@ -43,6 +43,9 @@ type Server struct {
 	stateID    int64
 	stateConns map[int64]stateConn // 活跃状态流连接（任务状态变化时广播）
 	stateTimer *time.Timer         // 状态广播节流定时器
+
+	orgMu      sync.Mutex // 目录整理防并发锁
+	orgRunning bool       // 是否有整理正在后台执行
 }
 
 // sseConn 一条活跃的 SSE 日志流连接
@@ -612,16 +615,31 @@ func (s *Server) organize(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	reqCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	drv := driver.NewOpenList(st.URL, st.Token)
 
-	// 执行 goroutine 通过带缓冲 channel 向主 goroutine 传 SSE 帧，避免并发写 ResponseWriter。
-	// 通道满时丢弃进度帧，不阻塞整理执行。
+	s.orgMu.Lock()
+	if s.orgRunning {
+		s.orgMu.Unlock()
+		io.WriteString(c.Writer, organizeEventFrame("error", gin.H{"error": "已有目录整理正在进行，请稍后再试"}))
+		flusher.Flush()
+		return
+	}
+	s.orgRunning = true
+	s.orgMu.Unlock()
+
+	// 整理执行使用后台 context，脱离 HTTP 请求生命周期：
+	// 网页关闭（请求 context 取消）只停止 SSE 推送，不中断正在执行的移动/建目录/重命名。
+	execCtx := context.Background()
 	evCh := make(chan string, 512)
 	go func() {
+		// 无论正常完成还是异常退出，都释放防并发锁
+		defer func() {
+			s.orgMu.Lock()
+			s.orgRunning = false
+			s.orgMu.Unlock()
+		}()
 		defer close(evCh)
-		res, err := organize.Run(reqCtx, drv, organize.Options{
+		res, err := organize.Run(execCtx, drv, organize.Options{
 			TargetPath: req.Path,
 			Mode:       req.Mode,
 			IDMode:     req.IDMode,
