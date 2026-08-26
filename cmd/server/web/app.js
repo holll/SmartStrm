@@ -943,11 +943,72 @@ async function loadWebhookLogs() {
 }
 
 // ============ 目录整理 ============
+let ORG_POLL = null; // 整理进度状态轮询定时器
+
 async function loadOrganize() {
   if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
   const sel = document.getElementById('org-storage');
   sel.innerHTML = (STORAGES||[]).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+  // 页面（重）打开时恢复后台正在进行的整理进度，或显示上次完成结果
+  pollOrganizeStatus();
 }
+
+// 统一更新整理进度条（兼容 SSE progress 帧与 /api/organize/status）
+function updateOrgProgressUI(st) {
+  const progWrap = document.getElementById('orgProgressWrap');
+  const progBar = document.getElementById('orgProgressBar');
+  const progText = document.getElementById('orgProgressText');
+  if (!st) return;
+  progWrap.classList.remove('d-none');
+  const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+  progBar.style.width = pct + '%';
+  progBar.setAttribute('aria-valuenow', pct);
+  const stage = st.stage === 'move' ? '移动分类' : '整理入库';
+  progText.textContent = `（${stage}）${st.done}/${st.total}  ${st.old} → ${st.new}`;
+}
+
+// 渲染整理结果表格
+function renderOrganizeResult(plan, errors, dryRun) {
+  const rows = document.getElementById('orgPlanRows');
+  document.getElementById('orgPlanCount').textContent = `共 ${plan.length} 项` + (dryRun ? '（预览）' : '（已执行）');
+  rows.innerHTML = plan.map(p => `<tr><td style="word-break:break-all">${esc(p.old)}</td><td style="word-break:break-all">${esc(p.new)}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="empty">无可整理项</td></tr>';
+  const errBox = document.getElementById('orgErrors');
+  if (errors && errors.length) {
+    errBox.style.display = ''; errBox.style.whiteSpace = 'pre-wrap';
+    errBox.innerHTML = '<strong>处理失败：</strong><div>' + errors.map(esc).join('\n') + '</div>';
+  } else { errBox.style.display = 'none'; }
+}
+
+// 轮询整理进度：网页关闭后整理在后台继续执行，重开页面据此恢复进度与结果
+function pollOrganizeStatus() {
+  clearTimeout(ORG_POLL); ORG_POLL = null;
+  api('/api/organize/status').then(st => {
+    if (st.running) {
+      updateOrgProgressUI(st);
+      ORG_POLL = setTimeout(pollOrganizeStatus, 1500);
+      return;
+    }
+    // 非运行中：停止轮询
+    if (st.finished) {
+      // 页面关闭期间整理已完成：展示结果并填满进度条
+      const progBar = document.getElementById('orgProgressBar');
+      const progText = document.getElementById('orgProgressText');
+      document.getElementById('orgProgressWrap').classList.remove('d-none');
+      progBar.style.width = '100%'; progBar.setAttribute('aria-valuenow', 100);
+      progText.textContent = `完成，共 ${(st.plan||[]).length} 项`;
+      renderOrganizeResult(st.plan || [], st.errors || [], false);
+    } else {
+      // 无活动中整理：隐藏进度条
+      const wrap = document.getElementById('orgProgressWrap');
+      if (wrap && !wrap.classList.contains('d-none')) wrap.classList.add('d-none');
+    }
+  }).catch(() => {
+    // 网络异常：延迟重试
+    ORG_POLL = setTimeout(pollOrganizeStatus, 5000);
+  });
+}
+
 async function organizeRun(dryRun) {
   const planBtn = document.getElementById('orgPlanBtn');
   const runBtn = document.getElementById('orgRunBtn');
@@ -1002,11 +1063,7 @@ async function organizeRun(dryRun) {
         let d;
         try { d = JSON.parse(data); } catch { continue; }
         if (event === 'progress') {
-          const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
-          progBar.style.width = pct + '%';
-          progBar.setAttribute('aria-valuenow', pct);
-          const stage = d.stage === 'move' ? '移动分类' : '整理入库';
-          progText.textContent = `（${stage}）${d.done}/${d.total}  ${d.old} → ${d.new}`;
+          updateOrgProgressUI(d); // stage/done/total/old/new 与 status 结构一致
         } else if (event === 'done') {
           plan = d.plan || []; errors = d.errors || [];
         } else if (event === 'error') {
@@ -1014,15 +1071,7 @@ async function organizeRun(dryRun) {
         }
       }
     }
-    const rows = document.getElementById('orgPlanRows');
-    document.getElementById('orgPlanCount').textContent = `共 ${plan.length} 项` + (dryRun ? '（预览）' : '（已执行）');
-    rows.innerHTML = plan.map(p => `<tr><td style="word-break:break-all">${esc(p.old)}</td><td style="word-break:break-all">${esc(p.new)}</td></tr>`).join('')
-      || '<tr><td colspan="2" class="empty">无可整理项</td></tr>';
-    const errBox = document.getElementById('orgErrors');
-    if (errors.length) {
-      errBox.style.display = ''; errBox.style.whiteSpace = 'pre-wrap';
-      errBox.innerHTML = '<strong>处理失败：</strong><div>' + errors.map(esc).join('\n') + '</div>';
-    } else { errBox.style.display = 'none'; }
+    renderOrganizeResult(plan, errors, dryRun);
     if (!dryRun) {
       progBar.style.width = '100%';
       progBar.setAttribute('aria-valuenow', 100);

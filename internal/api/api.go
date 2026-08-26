@@ -46,6 +46,92 @@ type Server struct {
 
 	orgMu      sync.Mutex // 目录整理防并发锁
 	orgRunning bool       // 是否有整理正在后台执行
+	orgStatus  *orgStatus // 整理进度（供页面重新打开后恢复显示）
+}
+
+// orgStatus 目录整理进度状态：后台执行期间/完成后断点续查。
+// 网页关闭后整理继续，重新打开页面通过 GET /api/organize/status 恢复进度与结果
+type orgStatus struct {
+	mu       sync.Mutex
+	Running  bool              `json:"running"`
+	Stage    string            `json:"stage,omitempty"`
+	Path     string            `json:"path,omitempty"`
+	Mode     string            `json:"mode,omitempty"`
+	IDMode   string            `json:"id_mode,omitempty"`
+	Done     int               `json:"done"`
+	Total    int               `json:"total"`
+	Old      string            `json:"old,omitempty"`
+	New      string            `json:"new,omitempty"`
+	Started  time.Time         `json:"started_at,omitempty"`
+	Updated  time.Time         `json:"updated_at,omitempty"`
+	Finished bool              `json:"finished"`
+	Plan     []organize.MoveOp `json:"plan,omitempty"`
+	Errors   []string          `json:"errors,omitempty"`
+}
+
+// reset 开始一次后台整理前重置状态
+func (o *orgStatus) reset(path, mode, idMode string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Running = true
+	o.Finished = false
+	o.Stage = ""
+	o.Path = path
+	o.Mode = mode
+	o.IDMode = idMode
+	o.Done = 0
+	o.Total = 0
+	o.Old = ""
+	o.New = ""
+	o.Started = time.Now()
+	o.Updated = time.Now()
+	o.Plan = nil
+	o.Errors = nil
+}
+
+// setProgress 更新进度字段
+func (o *orgStatus) setProgress(stage string, done, total int, op organize.MoveOp) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Stage = stage
+	o.Done = done
+	o.Total = total
+	o.Old = op.Old
+	o.New = op.New
+	o.Updated = time.Now()
+}
+
+// finish 标记整理完成并保存结果
+func (o *orgStatus) finish(plan []organize.MoveOp, errors []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Running = false
+	o.Finished = true
+	o.Plan = plan
+	o.Errors = errors
+	o.Updated = time.Now()
+}
+
+// snapshot 返回当前状态快照（供查询）
+func (o *orgStatus) snapshot() *orgStatus {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return &orgStatus{
+		Running:  o.Running,
+		Stage:    o.Stage,
+		Path:     o.Path,
+		Mode:     o.Mode,
+		IDMode:   o.IDMode,
+		Done:     o.Done,
+		Total:    o.Total,
+		Old:      o.Old,
+		New:      o.New,
+		Started:  o.Started,
+		Updated:  o.Updated,
+		Finished: o.Finished,
+		Plan:     o.Plan,
+		Errors:   o.Errors,
+	}
 }
 
 // sseConn 一条活跃的 SSE 日志流连接
@@ -70,6 +156,7 @@ func New(cfg *config.Config, mgr *task.Manager, database *db.DB) *Server {
 		tokens:     map[string]time.Time{},
 		sseConns:   map[int64]sseConn{},
 		stateConns: map[int64]stateConn{},
+		orgStatus:  &orgStatus{},
 	}
 	// 任务状态变化（开始/结束/panic 收尾）时广播给状态流订阅者
 	mgr.SetOnState(s.onStateChanged)
@@ -103,6 +190,7 @@ func (s *Server) Register(r *gin.Engine) {
 		api.GET("/storages/:name/list", s.browseStorage)
 		// 目录整理（cli 内部整理 / 移动到分类目录）
 		api.POST("/organize", s.organize)
+		api.GET("/organize/status", s.organizeStatus)
 		// 任务
 		api.GET("/tasks", s.listTasks)
 		api.POST("/tasks", s.addTask)
@@ -617,15 +705,19 @@ func (s *Server) organize(c *gin.Context) {
 	ctx := c.Request.Context()
 	drv := driver.NewOpenList(st.URL, st.Token)
 
-	s.orgMu.Lock()
-	if s.orgRunning {
+	// 后台整理（非预览）持防并发锁并记录进度状态；预览瞬时完成无需锁
+	if !req.DryRun {
+		s.orgMu.Lock()
+		if s.orgRunning {
+			s.orgMu.Unlock()
+			io.WriteString(c.Writer, organizeEventFrame("error", gin.H{"error": "已有目录整理正在进行，请稍后再试"}))
+			flusher.Flush()
+			return
+		}
+		s.orgRunning = true
 		s.orgMu.Unlock()
-		io.WriteString(c.Writer, organizeEventFrame("error", gin.H{"error": "已有目录整理正在进行，请稍后再试"}))
-		flusher.Flush()
-		return
+		s.orgStatus.reset(req.Path, req.Mode, req.IDMode)
 	}
-	s.orgRunning = true
-	s.orgMu.Unlock()
 
 	// 整理执行使用后台 context，脱离 HTTP 请求生命周期：
 	// 网页关闭（请求 context 取消）只停止 SSE 推送，不中断正在执行的移动/建目录/重命名。
@@ -646,6 +738,9 @@ func (s *Server) organize(c *gin.Context) {
 			DryRun:     req.DryRun,
 			Overwrite:  req.Overwrite,
 			Progress: func(stage string, done, total int, op organize.MoveOp) {
+				if !req.DryRun {
+					s.orgStatus.setProgress(stage, done, total, op)
+				}
 				frame := organizeEventFrame("progress", gin.H{
 					"stage": stage, "done": done, "total": total,
 					"old": op.Old, "new": op.New,
@@ -657,8 +752,14 @@ func (s *Server) organize(c *gin.Context) {
 			},
 		})
 		if err != nil {
+			if !req.DryRun {
+				s.orgStatus.finish(nil, []string{err.Error()})
+			}
 			evCh <- organizeEventFrame("error", gin.H{"error": err.Error()})
 			return
+		}
+		if !req.DryRun {
+			s.orgStatus.finish(res.Plan, res.Errors)
 		}
 		evCh <- organizeEventFrame("done", gin.H{"plan": res.Plan, "errors": res.Errors})
 		s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
@@ -683,6 +784,12 @@ func (s *Server) organize(c *gin.Context) {
 func organizeEventFrame(event string, data any) string {
 	b, _ := json.Marshal(data)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, b)
+}
+
+// organizeStatus 返回当前整理进度快照。网页关闭后整理在后台继续，
+// 重新打开页面轮询此接口即可恢复进度条显示与最终结果
+func (s *Server) organizeStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, s.orgStatus.snapshot())
 }
 
 // ============ 任务 ============
