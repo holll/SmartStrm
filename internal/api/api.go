@@ -583,7 +583,8 @@ type organizeReq struct {
 	Overwrite bool   `json:"overwrite"`
 }
 
-// organize 执行目录整理（cli 内部整理 + 移动到分类目录）
+// organize 执行目录整理（识别番号→一步入库→移动遗留分类）。
+// 响应以 SSE 流式推送：执行中推 progress 帧（大量文件时前端可显示进度），结束推 done / error 帧
 func (s *Server) organize(c *gin.Context) {
 	var req organizeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -599,20 +600,71 @@ func (s *Server) organize(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "存储不存在"})
 		return
 	}
-	drv := driver.NewOpenList(st.URL, st.Token)
-	res, err := organize.Run(c.Request.Context(), drv, organize.Options{
-		TargetPath: req.Path,
-		Mode:       req.Mode,
-		IDMode:     req.IDMode,
-		DryRun:     req.DryRun,
-		Overwrite:  req.Overwrite,
-	})
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "不支持流式输出"})
 		return
 	}
-	s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
-	c.JSON(http.StatusOK, res)
+
+	ctx := c.Request.Context()
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	drv := driver.NewOpenList(st.URL, st.Token)
+
+	// 执行 goroutine 通过带缓冲 channel 向主 goroutine 传 SSE 帧，避免并发写 ResponseWriter。
+	// 通道满时丢弃进度帧，不阻塞整理执行。
+	evCh := make(chan string, 512)
+	go func() {
+		defer close(evCh)
+		res, err := organize.Run(reqCtx, drv, organize.Options{
+			TargetPath: req.Path,
+			Mode:       req.Mode,
+			IDMode:     req.IDMode,
+			DryRun:     req.DryRun,
+			Overwrite:  req.Overwrite,
+			Progress: func(stage string, done, total int, op organize.MoveOp) {
+				frame := organizeEventFrame("progress", gin.H{
+					"stage": stage, "done": done, "total": total,
+					"old": op.Old, "new": op.New,
+				})
+				select {
+				case evCh <- frame:
+				default:
+				}
+			},
+		})
+		if err != nil {
+			evCh <- organizeEventFrame("error", gin.H{"error": err.Error()})
+			return
+		}
+		evCh <- organizeEventFrame("done", gin.H{"plan": res.Plan, "errors": res.Errors})
+		s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
+	}()
+
+	for {
+		select {
+		case frame, ok := <-evCh:
+			if !ok {
+				flusher.Flush()
+				return
+			}
+			io.WriteString(c.Writer, frame)
+			flusher.Flush()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// organizeEventFrame 生成一条 SSE 事件帧
+func organizeEventFrame(event string, data any) string {
+	b, _ := json.Marshal(data)
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, b)
 }
 
 // ============ 任务 ============

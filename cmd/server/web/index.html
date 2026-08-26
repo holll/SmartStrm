@@ -234,6 +234,10 @@
             <button class="btn btn-outline-secondary" id="orgPlanBtn" onclick="organizeRun(true)"><i class="bi bi-eye me-1"></i>预览计划</button>
             <button class="btn btn-primary" id="orgRunBtn" onclick="organizeRun(false)"><i class="bi bi-lightning me-1"></i>执行</button>
           </div>
+          <div class="d-none mt-3" id="orgProgressWrap">
+            <div class="progress mb-1" style="height:10px"><div class="progress-bar progress-bar-striped progress-bar-animated" id="orgProgressBar" role="progressbar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div></div>
+            <small class="text-muted" id="orgProgressText"></small>
+          </div>
         </div>
       </div>
       <div class="card">

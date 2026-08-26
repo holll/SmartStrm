@@ -140,11 +140,16 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
   "overwrite": false
 }
 ```
-响应 200：
+响应为 SSE 流（`text/event-stream`），事件：
+- `progress`（执行中，可多次）：`{"stage":"organize|move","done":N,"total":N,"old":"...","new":"..."}`（预览几乎瞬时，通常无 progress）
+- `done`（结束）：`{"plan":[{"old":"...","new":"..."}],"errors":[]}`
+- `error`（失败）：`{"error":"..."}`
+
+示例 `done` 帧数据：
 ```json
 {
   "plan": [
-    { "old": "/115/AV-cli/ADN-468 - 电影.mp4", "new": "/115/AV-cli/ADN-468/ADN-468.mp4" }
+    { "old": "/115/AV-cli/ADN-468 - 电影.mp4", "new": "/115/AV/A/ADN-468/ADN-468.mp4" }
   ],
   "errors": []
 }

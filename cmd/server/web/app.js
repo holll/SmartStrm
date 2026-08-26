@@ -954,29 +954,86 @@ async function organizeRun(dryRun) {
   const btn = dryRun ? planBtn : runBtn;
   btn.disabled = true; const old = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' + (dryRun ? '预览中…' : '执行中…');
+  const progWrap = document.getElementById('orgProgressWrap');
+  const progBar = document.getElementById('orgProgressBar');
+  const progText = document.getElementById('orgProgressText');
+  // 执行模式显示进度条；预览通常秒级完成，不显示
+  if (!dryRun) {
+    progWrap.classList.remove('d-none');
+    progBar.style.width = '0%';
+    progBar.setAttribute('aria-valuenow', 0);
+    progText.textContent = '准备中…';
+  }
   try {
-    const res = await api('/api/organize', 'POST', {
-      storage: document.getElementById('org-storage').value,
-      path: document.getElementById('org-path').value.trim(),
-      mode: document.getElementById('org-mode').value,
-      id_mode: document.getElementById('org-idmode').value,
-      dry_run: dryRun,
-      overwrite: document.getElementById('org-overwrite').checked,
+    const resp = await fetch('/api/organize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+      body: JSON.stringify({
+        storage: document.getElementById('org-storage').value,
+        path: document.getElementById('org-path').value.trim(),
+        mode: document.getElementById('org-mode').value,
+        id_mode: document.getElementById('org-idmode').value,
+        dry_run: dryRun,
+        overwrite: document.getElementById('org-overwrite').checked,
+      })
     });
+    if (resp.status === 401) { showLogin(); throw new Error('未登录'); }
+    if (!resp.ok) {
+      const ed = await resp.json().catch(() => ({}));
+      throw new Error(ed.error || ('HTTP ' + resp.status));
+    }
+    // 流式解析 SSE：progress 帧更新进度，done 帧取最终结果
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', plan = [], errors = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        let event = 'message', data = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7);
+          else if (line.startsWith('data: ')) data += line.slice(6);
+        }
+        if (!data) continue;
+        let d;
+        try { d = JSON.parse(data); } catch { continue; }
+        if (event === 'progress') {
+          const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
+          progBar.style.width = pct + '%';
+          progBar.setAttribute('aria-valuenow', pct);
+          const stage = d.stage === 'move' ? '移动分类' : '整理入库';
+          progText.textContent = `（${stage}）${d.done}/${d.total}  ${d.old} → ${d.new}`;
+        } else if (event === 'done') {
+          plan = d.plan || []; errors = d.errors || [];
+        } else if (event === 'error') {
+          throw new Error(d.error || '执行失败');
+        }
+      }
+    }
     const rows = document.getElementById('orgPlanRows');
-    document.getElementById('orgPlanCount').textContent = `共 ${(res.plan||[]).length} 项` + (dryRun ? '（预览）' : '（已执行）');
-    rows.innerHTML = (res.plan||[]).map(p => `<tr><td style="word-break:break-all">${esc(p.old)}</td><td style="word-break:break-all">${esc(p.new)}</td></tr>`).join('')
+    document.getElementById('orgPlanCount').textContent = `共 ${plan.length} 项` + (dryRun ? '（预览）' : '（已执行）');
+    rows.innerHTML = plan.map(p => `<tr><td style="word-break:break-all">${esc(p.old)}</td><td style="word-break:break-all">${esc(p.new)}</td></tr>`).join('')
       || '<tr><td colspan="2" class="empty">无可整理项</td></tr>';
     const errBox = document.getElementById('orgErrors');
-    if (res.errors && res.errors.length) {
+    if (errors.length) {
       errBox.style.display = ''; errBox.style.whiteSpace = 'pre-wrap';
-      errBox.innerHTML = '<strong>处理失败：</strong><div>' + res.errors.map(esc).join('\n') + '</div>';
+      errBox.innerHTML = '<strong>处理失败：</strong><div>' + errors.map(esc).join('\n') + '</div>';
     } else { errBox.style.display = 'none'; }
+    if (!dryRun) {
+      progBar.style.width = '100%';
+      progBar.setAttribute('aria-valuenow', 100);
+      progText.textContent = `完成，共 ${plan.length} 项`;
+    }
     toast(dryRun ? '预览完成' : '执行完成');
   } catch(e) {
     const errBox = document.getElementById('orgErrors');
     errBox.style.display = ''; errBox.innerHTML = esc(e.message || String(e));
     toast(e.message || String(e), 'danger');
+    if (!dryRun) progWrap.classList.add('d-none');
   } finally { btn.disabled = false; btn.innerHTML = old; }
 }
 

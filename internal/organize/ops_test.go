@@ -284,3 +284,38 @@ func TestFc2MoveOnly(t *testing.T) {
 		t.Fatalf("应无错误，got %v", res.Errors)
 	}
 }
+
+// TestOrganizeProgress 执行时按处理进度触发 Progress 回调（organize 阶段 3/3）
+func TestOrganizeProgress(t *testing.T) {
+	m := newMockFS()
+	seedCli(t, m)
+	type step struct{ stage string; done, total int }
+	var steps []step
+	res, err := Run(context.Background(), m, Options{
+		TargetPath: "/115/AV-cli", Mode: "all", IDMode: "AV",
+		DryRun: false, Overwrite: true,
+		Progress: func(stage string, done, total int, _ MoveOp) {
+			steps = append(steps, step{stage, done, total})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("应触发 Progress 回调")
+	}
+	// 3 个散落视频一次入库，organize 阶段应有 3 次进度，且 last = 3/3
+	orgDone, orgTotal, orgCount := 0, 0, 0
+	for _, s := range steps {
+		if s.stage == "organize" {
+			orgCount++
+			orgDone, orgTotal = s.done, s.total
+		}
+	}
+	if orgCount != 3 || orgDone != 3 || orgTotal != 3 {
+		t.Fatalf("organize 进度应为 3/3（3 次），got count=%d last=%d/%d", orgCount, orgDone, orgTotal)
+	}
+	if len(res.Errors) != 0 {
+		t.Fatalf("应无错误，got %v", res.Errors)
+	}
+}

@@ -22,6 +22,10 @@ type Options struct {
 	IDMode     string // AV / FC2
 	DryRun     bool   // true 仅预览计划
 	Overwrite  bool   // 目标同名存在时删除后覆盖
+
+	// Progress 非预览执行时，每成功处理一项调用一次（stage: organize / move）。
+	// done 为阶段内已处理数，total 为阶段内预估处理总数，op 为刚完成的移动计划项
+	Progress func(stage string, done, total int, op MoveOp)
 }
 
 // MoveOp 一次移动/重命名计划项
@@ -208,7 +212,15 @@ func (o *Organizer) organizeInside(ctx context.Context, items []driver.File) []M
 		o.existingNames[it.Name] = true
 	}
 
+	total := 0
+	for _, it := range items {
+		if !it.IsDir && isVideoFile(it.Name) {
+			total++
+		}
+	}
+
 	var plan []MoveOp
+	done := 0
 	for _, it := range items {
 		if it.IsDir || !isVideoFile(it.Name) {
 			continue
@@ -239,8 +251,17 @@ func (o *Organizer) organizeInside(ctx context.Context, items []driver.File) []M
 		if o.renameAndMoveIntoCli(ctx, oldAbs, oldName, newName, cliFolder) {
 			plan = append(plan, MoveOp{Old: oldAbs, New: cliNewAbs})
 		}
+		done++
+		o.emitProgress("organize", done, total, MoveOp{Old: oldAbs, New: cliNewAbs})
 	}
 	return plan
+}
+
+// emitProgress 触发进度回调（nil 时无操作）
+func (o *Organizer) emitProgress(stage string, done, total int, op MoveOp) {
+	if o.opts.Progress != nil {
+		o.opts.Progress(stage, done, total, op)
+	}
 }
 
 // renameAndMoveIntoCli 重命名（如需）并移入 cli 番号文件夹；返回是否实际移动
@@ -330,8 +351,18 @@ func isStandardFolder(name, idMode string) (baseCode, label string, isSingle, ok
 
 func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []MoveOp {
 	// 目标分类目录（AV/首字母/）内容缓存：每个首字母目录只 fs_list 一次
-	var plan []MoveOp
+	// 先统计待移动的标准番号文件夹数，供进度分母
+	total := 0
+	for _, it := range items {
+		if it.IsDir {
+			if _, _, _, ok := isStandardFolder(it.Name, o.opts.IDMode); ok {
+				total++
+			}
+		}
+	}
 
+	var plan []MoveOp
+	done := 0
 	for _, it := range items {
 		if !it.IsDir {
 			continue
@@ -345,11 +376,14 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 		oldAbs := joinPath(o.opts.TargetPath, folderName)
 		newAbs := joinPath(baseTarget, folderName)
 		if oldAbs == newAbs {
+			done++
 			continue
 		}
 
 		if o.opts.DryRun {
 			plan = append(plan, MoveOp{Old: oldAbs, New: newAbs})
+			done++
+			o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})
 			continue
 		}
 
@@ -369,6 +403,8 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 		if names[folderName] {
 			if !o.opts.Overwrite {
 				o.errs = append(o.errs, fmt.Sprintf("目标文件夹已存在，跳过移动: %s", newAbs))
+				done++
+				o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})
 				continue
 			}
 			// 覆盖模式：删除库内旧文件夹后移入
@@ -380,6 +416,8 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 			names[folderName] = true
 			plan = append(plan, MoveOp{Old: oldAbs, New: newAbs})
 		}
+		done++
+		o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})
 	}
 	return plan
 }
