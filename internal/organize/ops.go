@@ -65,8 +65,8 @@ func Run(ctx context.Context, client Client, o Options) (*Result, error) {
 		}
 		res.Plan = org.organizeInside(ctx, items)
 	case "move":
-		if strings.ToUpper(o.IDMode) != "AV" {
-			return nil, fmt.Errorf("move 模式只适用于 AV 目录")
+		if id := strings.ToUpper(o.IDMode); id != "AV" && id != "FC2" {
+			return nil, fmt.Errorf("move 模式需要指定番号模式 AV 或 FC2")
 		}
 		items, err := org.client.List(ctx, o.TargetPath)
 		if err != nil {
@@ -79,12 +79,10 @@ func Run(ctx context.Context, client Client, o Options) (*Result, error) {
 			return nil, err
 		}
 		res.Plan = org.organizeInside(ctx, items)
-		if strings.ToUpper(o.IDMode) == "AV" {
-			// 移动前重新扫描，反映整理后的状态（organize 会新建番号文件夹）
-			items2, err := org.client.List(ctx, o.TargetPath)
-			if err == nil {
-				res.Plan = append(res.Plan, org.moveToLibrary(ctx, items2)...)
-			}
+		// 移动前重新扫描，反映整理后的状态（organize 会新建番号文件夹）
+		items2, err := org.client.List(ctx, o.TargetPath)
+		if err == nil {
+			res.Plan = append(res.Plan, org.moveToLibrary(ctx, items2)...)
 		}
 	default:
 		return nil, fmt.Errorf("未知模式: %s", o.Mode)
@@ -282,12 +280,19 @@ func (o *Organizer) renameAndMoveIntoCli(ctx context.Context, oldAbs, oldName, n
 
 // ============ 模块2：移动到 AV/首字母 分类目录 ============
 
-func buildAvTargetBasePath(targetPath, baseCode string) string {
-	first := strings.ToUpper(baseCode)[:1]
+// buildLibraryBasePath 计算 move 的目标库根路径：
+// - 目标目录以 -cli 结尾时先去后缀（/115/AV-cli → /115/AV），库与 cli 目录同层
+// - AV：`{库根}/{首字母}`（ABC-123 → /115/AV/A）
+// - FC2：直接进 `{库根}`（/115/FC2，FC2 番号无首字母分类）
+func buildLibraryBasePath(targetPath, baseCode, idMode string) string {
 	stripped := strings.TrimSuffix(targetPath, "/")
 	if strings.HasSuffix(strings.ToLower(stripped), "-cli") {
 		stripped = stripped[:len(stripped)-4]
 	}
+	if strings.ToUpper(idMode) == "FC2" {
+		return stripped
+	}
+	first := strings.ToUpper(baseCode)[:1]
 	return joinPath(stripped, first)
 }
 
@@ -302,6 +307,23 @@ func isStandardAvFolder(name string) (baseCode, label string, isSingle, ok bool)
 	return base, label, true, true
 }
 
+// isStandardFolder 按番号模式判断是否为已整理好的标准番号文件夹（move 的移动对象）
+func isStandardFolder(name, idMode string) (baseCode, label string, isSingle, ok bool) {
+	switch strings.ToUpper(idMode) {
+	case "FC2":
+		base, label, isSingle, ok := parseFc2VideoID(name)
+		if !ok || !isSingle {
+			return "", "", false, false
+		}
+		if strings.ToUpper(name) != strings.ToUpper(base) {
+			return "", "", false, false
+		}
+		return base, label, true, true
+	default:
+		return isStandardAvFolder(name)
+	}
+}
+
 func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []MoveOp {
 	// 目标分类目录（AV/首字母/）内容缓存：每个首字母目录只 fs_list 一次
 	var plan []MoveOp
@@ -311,11 +333,11 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 			continue
 		}
 		folderName := it.Name
-		baseCode, _, _, ok := isStandardAvFolder(folderName)
+		baseCode, _, _, ok := isStandardFolder(folderName, o.opts.IDMode)
 		if !ok {
 			continue
 		}
-		baseTarget := buildAvTargetBasePath(o.opts.TargetPath, baseCode)
+		baseTarget := buildLibraryBasePath(o.opts.TargetPath, baseCode, o.opts.IDMode)
 		oldAbs := joinPath(o.opts.TargetPath, folderName)
 		newAbs := joinPath(baseTarget, folderName)
 		if oldAbs == newAbs {

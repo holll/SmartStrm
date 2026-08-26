@@ -232,7 +232,7 @@ type Client interface {
 | Mode | 行为 |
 |---|---|
 | `organize` | **cli 内部整理**：遍历目录下散落的视频文件，识别番号后归入 `{目标目录}/{番号}/`，同时重命名为规范名 |
-| `move` | **AV 分类移动**：把标准 AV 番号文件夹移动到 `{父目录}/{首字母}/`（仅 AV） |
+| `move` | **分类移动**：把已整理好的番号文件夹移入分类库（AV→`{目标目录去 -cli}/{首字母}/`，FC2→`{目标目录去 -cli}/`） |
 | `all` | 先 `organize` 再 `move`（move 前重新扫描以反映整理后状态） |
 
 ### 5.2 番号识别与命名规则（rules.go）
@@ -354,4 +354,4 @@ type Client interface {
 - `Rename` 已实现，供目录整理重命名使用
 - 管理页为单 HTML 无构建产物；如需复杂 UI 可独立前端对接 REST API
 - `strm_base` 指向的直链需对 Emby 可达；签名直链（OpenList `/d/` url 参数）未实现
-- organize 的 `move` 模式只支持 AV（FC2 无首字母分类逻辑）
+- organize 的 `move` 模式 AV/FC2 均支持：AV 按首字母分库（`{库}/{首字母}/`），FC2 直接入库根（`{库}/`，无首字母分类）

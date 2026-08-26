@@ -132,6 +132,18 @@ func seedCli(t *testing.T, m *mockFS) {
 	}
 }
 
+// seedFc2Cli 预置文件：/115/FC2-cli 下散落的 FC2 视频
+func seedFc2Cli(t *testing.T, m *mockFS) {
+	m.mu.Lock()
+	m.mu.Unlock()
+	dir := "/115/FC2-cli"
+	m.root[dir] = map[string]bool{
+		"fc2ppv1234567.mp4":        false,
+		"FC2-PPV-7654321-CD2.mp4":  false,
+		"FC2-PPV-1111111-c.mp4":    false,
+	}
+}
+
 func has(m *mockFS, dir, name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -189,6 +201,65 @@ func TestOrganizeAll(t *testing.T) {
 	}
 	if !has(m, "/115/AV/A/ABC-123-U", "ABC-123-U.mp4") {
 		t.Fatal("ABC-123-U.mp4 应在目录内")
+	}
+	if len(res.Errors) != 0 {
+		t.Fatalf("应无错误，got %v", res.Errors)
+	}
+}
+
+// TestFc2All FC2 整理并移动到 /115/FC2 根目录
+func TestFc2All(t *testing.T) {
+	m := newMockFS()
+	seedFc2Cli(t, m)
+	res, err := Run(context.Background(), m, Options{
+		TargetPath: "/115/FC2-cli", Mode: "all", IDMode: "FC2",
+		DryRun: false, Overwrite: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// fc2ppv1234567 单部 → 整理进 /115/FC2-cli/FC2-PPV-1234567，再移动到 /115/FC2 根
+	if !has(m, "/115/FC2", "FC2-PPV-1234567") {
+		t.Fatal("FC2-PPV-1234567 应在 /115/FC2 下")
+	}
+	if !has(m, "/115/FC2/FC2-PPV-1234567", "FC2-PPV-1234567.mp4") {
+		t.Fatal("FC2-PPV-1234567.mp4 应在目录内")
+	}
+	// FC2-PPV-7654321-CD2 分集 → 文件夹名去掉分集标签，进入 /115/FC2 根
+	if !has(m, "/115/FC2", "FC2-PPV-7654321") {
+		t.Fatal("FC2-PPV-7654321 应在 /115/FC2 下")
+	}
+	if !has(m, "/115/FC2/FC2-PPV-7654321", "FC2-PPV-7654321-CD2.mp4") {
+		t.Fatal("FC2-PPV-7654321-CD2.mp4 应在目录内")
+	}
+	// FC2-PPV-1111111-c 单部标签 c → 无码标记保留（FC2 单部标签拼到文件名，文件夹名仍为 base）
+	if !has(m, "/115/FC2", "FC2-PPV-1111111") {
+		t.Fatal("FC2-PPV-1111111 应在 /115/FC2 下")
+	}
+	if !has(m, "/115/FC2/FC2-PPV-1111111", "FC2-PPV-1111111-C.mp4") {
+		t.Fatal("FC2-PPV-1111111-C.mp4 应在目录内")
+	}
+	if len(res.Errors) != 0 {
+		t.Fatalf("应无错误，got %v", res.Errors)
+	}
+}
+
+// TestFc2MoveOnly FC2 move 模式直接把已整理文件夹移入 /115/FC2
+func TestFc2MoveOnly(t *testing.T) {
+	m := newMockFS()
+	// 预置已整理好的 FC2 文件夹
+	m.mu.Lock()
+	m.root["/115/FC2-cli"] = map[string]bool{"FC2-PPV-1234567": true}
+	m.mu.Unlock()
+	res, err := Run(context.Background(), m, Options{
+		TargetPath: "/115/FC2-cli", Mode: "move", IDMode: "FC2",
+		DryRun: false, Overwrite: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !has(m, "/115/FC2", "FC2-PPV-1234567") {
+		t.Fatal("FC2 move 应把番号文件夹移入 /115/FC2")
 	}
 	if len(res.Errors) != 0 {
 		t.Fatalf("应无错误，got %v", res.Errors)
