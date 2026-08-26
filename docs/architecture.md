@@ -44,7 +44,7 @@ Go 语言实现的 STRM 生成工具（仅 STRM 相关功能）：OpenList/AList
 | 入口 | `cmd/server` | 装配、配置加载（从 DB）、embed 管理页注册、信号退出 |
 | 接口 | `internal/api` | 管理 REST API + Bearer token 认证 + SSE 日志/状态推送 |
 | 接口 | `internal/webhook` | 外部触发（任务触发 / Emby 删除同步），统一入口按 body 分派 |
-| 调度 | `internal/task` | 任务模型、Cron 调度（robfig/cron）、运行状态、日志缓冲 |
+| 调度 | `internal/task` | 任务模型、Cron 调度（robfig/cron，`cron.WithLocation(UTC+8)`）、运行状态、日志缓冲 |
 | 核心 | `internal/generator` | STRM 生成主流程（扫描→过滤→插件链→生成/清理） |
 | 扩展 | `internal/plugins` | 插件接口 + 5 个内置插件 |
 | 整理 | `internal/organize` | 网盘目录整理：番号识别、命名规范化、一步归入分类库（AV 按首字母 / FC2 根） |

@@ -16,6 +16,10 @@ import (
 	"smartstrm/internal/generator"
 )
 
+// chinaTZ 中国时区（UTC+8，无夏令时）。cron 表达式按此时区解释：
+// 避免服务器时区为 UTC 时，`44 4 * * *` 被理解成 UTC 04:44（= 北京时间 12:44）执行
+var chinaTZ = time.FixedZone("CST", 8*3600)
+
 // LogLine 任务日志行
 type LogLine struct {
 	Seq   int64     `json:"seq"`
@@ -175,7 +179,7 @@ func New(cfg *config.Config, database *db.DB) *Manager {
 	return &Manager{
 		cfg:     cfg,
 		db:      database,
-		cron:    cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger))),
+		cron:    cron.New(cron.WithLocation(chinaTZ), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger))),
 		entryID: map[string]cron.EntryID{},
 		running: map[string]bool{},
 		cancel:  map[string]context.CancelFunc{},
