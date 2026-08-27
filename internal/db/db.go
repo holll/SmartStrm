@@ -14,7 +14,9 @@ type DB struct {
 	conn *sql.DB
 }
 
-// timeFmt 统一时间存储格式（SQLite date() 可解析的 ISO 格式）
+// timeFmt 统一时间存储格式（SQLite date() 可解析的 ISO 格式）。
+// 统一存 UTC 字符串：驱动读回无时区字符串时按 UTC 解释，前端再按本地时区
+// 展示，避免把本地时间字符串误读为 UTC 导致偏移 8 小时
 const timeFmt = "2006-01-02 15:04:05"
 
 // Run 运行记录
@@ -134,7 +136,7 @@ func (d *DB) migrate() error {
 
 // CreateRun 创建运行记录，返回 ID
 func (d *DB) CreateRun(task string) (int64, error) {
-	res, err := d.conn.Exec(`INSERT INTO runs (task, start_at, status) VALUES (?, ?, 'running')`, task, time.Now().Format(timeFmt))
+	res, err := d.conn.Exec(`INSERT INTO runs (task, start_at, status) VALUES (?, ?, 'running')`, task, time.Now().UTC().Format(timeFmt))
 	if err != nil {
 		return 0, err
 	}
@@ -144,20 +146,20 @@ func (d *DB) CreateRun(task string) (int64, error) {
 // FinishRun 结束运行记录
 func (d *DB) FinishRun(id int64, status string, generated, copied, removed, skipped int, errMsg string) error {
 	_, err := d.conn.Exec(`UPDATE runs SET end_at=?, status=?, generated=?, copied=?, removed=?, skipped=?, error=? WHERE id=?`,
-		time.Now().Format(timeFmt), status, generated, copied, removed, skipped, nullStr(errMsg), id)
+		time.Now().UTC().Format(timeFmt), status, generated, copied, removed, skipped, nullStr(errMsg), id)
 	return err
 }
 
 // UpdateRunStatus 仅更新状态（停止时）
 func (d *DB) UpdateRunStatus(id int64, status, errMsg string) error {
-	_, err := d.conn.Exec(`UPDATE runs SET end_at=?, status=?, error=? WHERE id=?`, time.Now().Format(timeFmt), status, nullStr(errMsg), id)
+	_, err := d.conn.Exec(`UPDATE runs SET end_at=?, status=?, error=? WHERE id=?`, time.Now().UTC().Format(timeFmt), status, nullStr(errMsg), id)
 	return err
 }
 
 // CleanupStaleRuns 清理上次异常退出遗留的 running 记录（程序被强制终止时无法收尾）
 func (d *DB) CleanupStaleRuns() error {
 	_, err := d.conn.Exec(`UPDATE runs SET end_at=?, status='error', error='程序异常退出，运行中断'
-		WHERE status='running'`, time.Now().Format(timeFmt))
+		WHERE status='running'`, time.Now().UTC().Format(timeFmt))
 	return err
 }
 
@@ -187,7 +189,7 @@ func (d *DB) InsertLogs(runID int64, lines []struct {
 	}
 	defer stmt.Close()
 	for _, l := range lines {
-		if _, err := stmt.Exec(runID, l.Time.Format(timeFmt), l.Level, l.Msg); err != nil {
+		if _, err := stmt.Exec(runID, l.Time.UTC().Format(timeFmt), l.Level, l.Msg); err != nil {
 			return err
 		}
 	}
@@ -269,7 +271,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 // InsertAudit 写入审计
 func (d *DB) InsertAudit(user, action, target, detail string) error {
 	_, err := d.conn.Exec(`INSERT INTO audit_logs (time, user, action, target, detail) VALUES (?, ?, ?, ?, ?)`,
-		time.Now().Format(timeFmt), user, action, nullStr(target), nullStr(detail))
+		time.Now().UTC().Format(timeFmt), user, action, nullStr(target), nullStr(detail))
 	return err
 }
 
@@ -304,7 +306,7 @@ func (d *DB) InsertWebhookLog(l WebhookLog) error {
 	}
 	_, err := d.conn.Exec(`INSERT INTO webhook_logs (time, kind, event, payload, action, target, remote_path, result, detail)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		time.Now().Format(timeFmt), l.Kind, l.Event, nullStr(l.Payload), l.Action,
+		time.Now().UTC().Format(timeFmt), l.Kind, l.Event, nullStr(l.Payload), l.Action,
 		nullStr(l.Target), nullStr(l.RemotePath), l.Result, nullStr(l.Detail))
 	return err
 }
