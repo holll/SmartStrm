@@ -132,6 +132,16 @@ const listPerPage = 100
 
 // List 列出目录内容，处理分页
 func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
+	return o.list(ctx, path, false)
+}
+
+// ListRefresh 强制刷新列出目录内容（refresh=true 绕过 OpenList/AList 缓存）
+func (o *OpenList) ListRefresh(ctx context.Context, path string) ([]File, error) {
+	return o.list(ctx, path, true)
+}
+
+// list 列出目录内容（refresh=true 时要求上游强制刷新）
+func (o *OpenList) list(ctx context.Context, path string, refresh bool) ([]File, error) {
 	var files []File
 	page := 1
 	for {
@@ -140,7 +150,7 @@ func (o *OpenList) List(ctx context.Context, path string) ([]File, error) {
 			"password": "",
 			"page":     page,
 			"per_page": listPerPage,
-			"refresh":  false,
+			"refresh":  refresh,
 		})
 		if err != nil {
 			return nil, err

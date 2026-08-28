@@ -643,6 +643,7 @@ func (s *Server) deleteStorage(c *gin.Context) {
 func (s *Server) browseStorage(c *gin.Context) {
 	name := c.Param("name")
 	path := c.Query("path")
+	refresh := c.Query("refresh") == "1" || c.Query("refresh") == "true"
 	if path == "" {
 		path = "/"
 	}
@@ -656,7 +657,17 @@ func (s *Server) browseStorage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	files, err := drv.List(c.Request.Context(), path)
+	var files []driver.File
+	if refresh {
+		// 强制刷新：优先走带 refresh=true 的加载，绕过 OpenList/AList 目录缓存
+		if lr, ok := drv.(interface{ ListRefresh(context.Context, string) ([]driver.File, error) }); ok {
+			files, err = lr.ListRefresh(c.Request.Context(), path)
+		} else {
+			files, err = drv.List(c.Request.Context(), path)
+		}
+	} else {
+		files, err = drv.List(c.Request.Context(), path)
+	}
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return

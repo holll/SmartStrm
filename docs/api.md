@@ -113,8 +113,8 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 ### DELETE /api/storages/:name
 删除存储。404 = 不存在。
 
-### GET /api/storages/:name/list?path=/xx
-存储浏览：调用驱动 `List` 列出目录。`path` 缺省 `/`。
+### GET /api/storages/:name/list?path=/xx&refresh=1
+存储浏览：调用驱动 `List` 列出目录。`path` 缺省 `/`。`refresh=1` 时强制刷新（upload 到 OpenList/AList 的列表缓存），用于浏览页手动刷新按钮。
 响应 200：
 ```json
 [

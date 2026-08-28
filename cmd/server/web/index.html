@@ -187,7 +187,7 @@
             <span class="input-group-text"><i class="bi bi-hdd-network"></i></span>
             <select id="browseStorage" class="form-select" style="max-width:200px" onchange="browseChangeStorage()"></select>
             <input type="text" class="form-control" id="browsePathInput" placeholder="/" spellcheck="false" title="路径（回车跳转）">
-            <button class="btn btn-outline-secondary" type="button" title="刷新" onclick="loadBrowse()"><i class="bi bi-arrow-clockwise"></i></button>
+            <button class="btn btn-outline-secondary" type="button" title="强制刷新" onclick="loadBrowse(true)"><i class="bi bi-arrow-clockwise"></i></button>
             <button class="btn btn-outline-secondary border-start-0" type="button" title="复制路径" onclick="copyPath()"><i class="bi bi-clipboard"></i></button>
             <button class="btn btn-success" id="browsePickBtn" style="display:none" onclick="browsePickPath()"><i class="bi bi-check-lg"></i>选择此路径</button>
           </div>

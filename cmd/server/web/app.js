@@ -263,7 +263,7 @@ function browseChangeStorage() {
   loadBrowse();
 }
 
-async function loadBrowse() {
+async function loadBrowse(refresh) {
   if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
   const sel = document.getElementById('browseStorage');
   const needFill = !sel.options.length || (BROWSE.storage && sel.value !== BROWSE.storage);
@@ -287,7 +287,8 @@ async function loadBrowse() {
   document.getElementById('browseTitle').textContent = '存储浏览 - ' + BROWSE.storage + (BROWSE.pick ? '（选择扫描路径）' : '');
   document.getElementById('browsePathInput').value = BROWSE.path;
   try {
-    const files = (await api('/api/storages/'+encodeURIComponent(BROWSE.storage)+'/list?path='+encodeURIComponent(BROWSE.path))) || [];
+    const qs = '?path=' + encodeURIComponent(BROWSE.path) + (refresh ? '&refresh=1' : '');
+    const files = (await api('/api/storages/'+encodeURIComponent(BROWSE.storage)+'/list'+qs)) || [];
     const rows = document.getElementById('browseRows');
     // 前端搜索过滤
     const filter = (document.getElementById('browseFilter').value || '').trim().toLowerCase();
