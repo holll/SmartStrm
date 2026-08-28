@@ -16,6 +16,10 @@ var singleLabels = map[string]bool{"c": true, "u": true, "uc": true, "cu": true}
 var avVideoRe = regexp.MustCompile(`(?i)^([a-z]{1,10}-?\d{2,5}v?)(?:-([a-z0-9]{1,10}))?`)
 var avCodeRe = regexp.MustCompile(`(?i)^([a-z]{1,10})-?(\d{2,5})(v?)$`)
 
+// specialPrefixedRe 厂商前缀含数字的特殊番号（1pondo 系 T38-068、T28-602 等）：
+// 整体作为一个番号，若先走 avVideoRe 会被错拆成 T-038 + 分集 068
+var specialPrefixedRe = regexp.MustCompile(`(?i)^([a-z]+\d{1,2}-\d{2,5})(?:-([a-z0-9]{1,10}))?`)
+
 var fc2Re = regexp.MustCompile(`(?i)^(?:fc2(?:[-_\s]?ppv)?|fc1)[-_\s]?(\d{5,8})(?:-(cd\d+|\d+|[a-z]))?`)
 
 // isCharCode 判断字符是否属于 [0-9a-zA-Z_]（含下划线）。
@@ -45,6 +49,24 @@ func normalizeAvCode(code string) string {
 // - label 为第二个 '-' 后的标签；无标签则空
 // - is_single=true 表示单部（无标签或属于 c/u/uc/cu），false 表示分集
 func parseAvVideoID(text string) (baseCode, label string, isSingle bool, ok bool) {
+	// 优先识别厂商前缀含数字的特殊番号（T38-068 / T28-602），整体不拆分
+	if loc := specialPrefixedRe.FindStringSubmatchIndex(text); loc != nil {
+		if loc[1] >= len(text) || !isCharCode(text[loc[1]]) {
+			base := strings.ToUpper(text[loc[2]:loc[3]])
+			var lb string
+			if loc[4] >= 0 {
+				lb = strings.ToLower(text[loc[4]:loc[5]])
+			}
+			if lb == "" {
+				return base, "", true, true
+			}
+			if singleLabels[lb] {
+				return base, lb, true, true
+			}
+			return base, lb, false, true
+		}
+	}
+
 	loc := avVideoRe.FindStringSubmatchIndex(text)
 	if loc == nil {
 		return "", "", false, false

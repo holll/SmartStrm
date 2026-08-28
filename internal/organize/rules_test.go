@@ -10,6 +10,9 @@ func TestNormalizeAvCode(t *testing.T) {
 		"abc00001":   "ABC-001",
 		"STARS-220":  "STARS-220",
 		"mida590":    "MIDA-590",
+		// 厂商前缀含数字（1pondo 系）：整体番号不重排
+		"T38-068": "T38-068",
+		"T28-602": "T28-602",
 	}
 	for in, want := range cases {
 		if got := normalizeAvCode(in); got != want {
@@ -35,6 +38,12 @@ func TestParseAvVideoID(t *testing.T) {
 		{"abc123_456", "", "", false, false},
 		// 多集不一定有 -label，但 - 后跟长串视为分集
 		{"vrkm00919-cd9", "VRKM-919", "cd9", false, true},
+		// 厂商前缀含数字（1pondo 系）：整体番号不拆分
+		{"T38-068", "T38-068", "", true, true},
+		{"T28-602", "T28-602", "", true, true},
+		{"T38-068-CD1", "T38-068", "cd1", false, true},
+		// 全字母前缀不受影响
+		{"TEK-068", "TEK-068", "", true, true},
 	}
 	for _, c := range cases {
 		base, label, isSingle, ok := parseAvVideoID(c.in)
