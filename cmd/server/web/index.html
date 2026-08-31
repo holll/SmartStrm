@@ -231,7 +231,7 @@
           </div>
           <div class="check-row"><input type="checkbox" class="form-check-input me-2" id="org-overwrite" checked><label class="form-check-label" for="org-overwrite">目标同名存在时删除后覆盖</label><div class="tip ms-1">115 删除进回收站，可恢复</div></div>
           <div class="d-flex gap-2 mt-2">
-            <button class="btn btn-outline-secondary" id="orgPlanBtn" onclick="organizeRun(true)"><i class="bi bi-eye me-1"></i>预览计划</button>
+            <button class="btn btn-outline-secondary" id="orgPlanBtn" onclick="organizeRun(true)"><i class="bi bi-eye me-1"></i>预览</button>
             <button class="btn btn-primary" id="orgRunBtn" onclick="organizeRun(false)"><i class="bi bi-lightning me-1"></i>执行</button>
           </div>
           <div class="d-none mt-3" id="orgProgressWrap">
@@ -241,11 +241,20 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h5 class="mb-0"><i class="bi bi-list-check me-2 text-primary"></i>计划</h5><span class="text-muted small" id="orgPlanCount"></span></div>
+        <div class="card-head">
+          <h5 class="mb-0"><i class="bi bi-list-check me-2 text-primary"></i>整理日志</h5>
+          <button class="btn btn-outline-secondary btn-sm" onclick="clearOrganizeLog()"><i class="bi bi-trash me-1"></i>清空显示</button>
+        </div>
+        <div class="table-wrap">
+          <pre class="task-log" id="orgLog">日志为空</pre>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h5 class="mb-0"><i class="bi bi-clock-history me-2 text-primary"></i>整理历史 <span class="text-muted small fw-normal">最近 50 次，持久化</span></h5></div>
         <div class="table-wrap">
           <table class="table table-hover">
-            <thead><tr><th>原路径</th><th>新路径</th></tr></thead>
-            <tbody id="orgPlanRows"></tbody>
+            <thead><tr><th class="num">#</th><th>目标目录</th><th>模式</th><th>番号</th><th class="num">开始</th><th class="num">耗时</th><th>状态</th><th class="num">移动</th><th>错误</th><th>操作</th></tr></thead>
+            <tbody id="orgHistoryRows"></tbody>
           </table>
         </div>
       </div>

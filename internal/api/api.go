@@ -65,12 +65,13 @@ type orgStatus struct {
 	Started  time.Time         `json:"started_at,omitempty"`
 	Updated  time.Time         `json:"updated_at,omitempty"`
 	Finished bool              `json:"finished"`
+	RunID    int64             `json:"run_id,omitempty"`
 	Plan     []organize.MoveOp `json:"plan,omitempty"`
 	Errors   []string          `json:"errors,omitempty"`
 }
 
 // reset 开始一次后台整理前重置状态
-func (o *orgStatus) reset(path, mode, idMode string) {
+func (o *orgStatus) reset(path, mode, idMode string, runID int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.Running = true
@@ -85,6 +86,7 @@ func (o *orgStatus) reset(path, mode, idMode string) {
 	o.New = ""
 	o.Started = time.Now()
 	o.Updated = time.Now()
+	o.RunID = runID
 	o.Plan = nil
 	o.Errors = nil
 }
@@ -129,6 +131,7 @@ func (o *orgStatus) snapshot() *orgStatus {
 		Started:  o.Started,
 		Updated:  o.Updated,
 		Finished: o.Finished,
+		RunID:    o.RunID,
 		Plan:     o.Plan,
 		Errors:   o.Errors,
 	}
@@ -191,6 +194,8 @@ func (s *Server) Register(r *gin.Engine) {
 		// 目录整理（cli 内部整理 / 移动到分类目录）
 		api.POST("/organize", s.organize)
 		api.GET("/organize/status", s.organizeStatus)
+		api.GET("/organize/runs", s.organizeRuns)
+		api.GET("/organize/runs/:id/log", s.organizeRunLog)
 		// 任务
 		api.GET("/tasks", s.listTasks)
 		api.POST("/tasks", s.addTask)
@@ -716,7 +721,28 @@ func (s *Server) organize(c *gin.Context) {
 	ctx := c.Request.Context()
 	drv := driver.NewOpenList(st.URL, st.Token)
 
+	// 整理执行使用后台 context，脱离 HTTP 请求生命周期：
+	// 网页关闭（请求 context 取消）只停止 SSE 推送，不中断正在执行的移动/建目录/重命名。
+	execCtx := context.Background()
+	evCh := make(chan string, 512)
+
+	// 日志收集器：SSE 推 log 帧，同时缓存本次日志供结束落库
+	var logMu sync.Mutex
+	var logLines []orgLogLine
+	logf := func(level, format string, args ...any) {
+		line := orgLogLine{Time: time.Now(), Level: level, Msg: fmt.Sprintf(format, args...)}
+		logMu.Lock()
+		logLines = append(logLines, line)
+		logMu.Unlock()
+		frame := organizeEventFrame("log", gin.H{"time": line.Time, "level": line.Level, "msg": line.Msg})
+		select {
+		case evCh <- frame:
+		default:
+		}
+	}
+
 	// 后台整理（非预览）持防并发锁并记录进度状态；预览瞬时完成无需锁
+	var orgRunID int64
 	if !req.DryRun {
 		s.orgMu.Lock()
 		if s.orgRunning {
@@ -727,13 +753,13 @@ func (s *Server) organize(c *gin.Context) {
 		}
 		s.orgRunning = true
 		s.orgMu.Unlock()
-		s.orgStatus.reset(req.Path, req.Mode, req.IDMode)
+		if s.db != nil {
+			orgRunID, _ = s.db.CreateOrganizeRun(req.Path, req.Mode, req.IDMode)
+		}
+		s.orgStatus.reset(req.Path, req.Mode, req.IDMode, orgRunID)
 	}
 
-	// 整理执行使用后台 context，脱离 HTTP 请求生命周期：
-	// 网页关闭（请求 context 取消）只停止 SSE 推送，不中断正在执行的移动/建目录/重命名。
-	execCtx := context.Background()
-	evCh := make(chan string, 512)
+	orgLogger := &organizeLogger{logf: logf}
 	go func() {
 		// 无论正常完成还是异常退出，都释放防并发锁
 		defer func() {
@@ -748,6 +774,7 @@ func (s *Server) organize(c *gin.Context) {
 			IDMode:     req.IDMode,
 			DryRun:     req.DryRun,
 			Overwrite:  req.Overwrite,
+			Logf:       orgLogger,
 			Progress: func(stage string, done, total int, op organize.MoveOp) {
 				if !req.DryRun {
 					s.orgStatus.setProgress(stage, done, total, op)
@@ -763,16 +790,24 @@ func (s *Server) organize(c *gin.Context) {
 			},
 		})
 		if err != nil {
+			// 出错也落库：记录 error 状态与已输出日志
+			s.persistOrganizeRun(orgRunID, req.DryRun, "error", nil, []string{err.Error()}, &logMu, &logLines)
 			if !req.DryRun {
 				s.orgStatus.finish(nil, []string{err.Error()})
 			}
 			evCh <- organizeEventFrame("error", gin.H{"error": err.Error()})
 			return
 		}
+		// 落库：整理记录 + 本次日志（仅非预览）
+		status := "success"
+		if len(res.Errors) > 0 {
+			status = "error"
+		}
+		s.persistOrganizeRun(orgRunID, req.DryRun, status, res.Plan, res.Errors, &logMu, &logLines)
 		if !req.DryRun {
 			s.orgStatus.finish(res.Plan, res.Errors)
 		}
-		evCh <- organizeEventFrame("done", gin.H{"plan": res.Plan, "errors": res.Errors})
+		evCh <- organizeEventFrame("done", gin.H{"run_id": orgRunID, "plan": res.Plan, "errors": res.Errors, "dry_run": req.DryRun})
 		s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
 	}()
 
@@ -791,16 +826,88 @@ func (s *Server) organize(c *gin.Context) {
 	}
 }
 
+// organizeLogger 适配 organize.Logger 接口
+type organizeLogger struct {
+	logf func(level, format string, args ...any)
+}
+
+func (l *organizeLogger) Logf(level, format string, args ...any) {
+	l.logf(level, format, args...)
+}
+
+// persistOrganizeRun 持久化一次整理运行记录与日志（预览不入库）
+func (s *Server) persistOrganizeRun(orgRunID int64, dryRun bool, status string, plan []organize.MoveOp, errors []string, logMu *sync.Mutex, logLines *[]orgLogLine) {
+	if dryRun || s.db == nil || orgRunID <= 0 {
+		return
+	}
+	errMsg := ""
+	if len(errors) > 0 {
+		errMsg = strings.Join(errors, "\n")
+	}
+	_ = s.db.FinishOrganizeRun(orgRunID, status, len(plan), errMsg)
+	logMu.Lock()
+	dbLines := make([]db.OrganizeLogLine, len(*logLines))
+	for i, l := range *logLines {
+		dbLines[i] = db.OrganizeLogLine{Time: l.Time, Level: l.Level, Msg: l.Msg}
+	}
+	logMu.Unlock()
+	_ = s.db.InsertOrganizeLogs(orgRunID, dbLines)
+}
+
 // organizeEventFrame 生成一条 SSE 事件帧
 func organizeEventFrame(event string, data any) string {
 	b, _ := json.Marshal(data)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, b)
 }
 
+// orgLogLine 目录整理日志行（SSE log 帧载荷 / 落库缓存）
+type orgLogLine struct {
+	Time  time.Time `json:"time"`
+	Level string    `json:"level"`
+	Msg   string    `json:"msg"`
+}
+
 // organizeStatus 返回当前整理进度快照。网页关闭后整理在后台继续，
 // 重新打开页面轮询此接口即可恢复进度条显示与最终结果
 func (s *Server) organizeStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, s.orgStatus.snapshot())
+}
+
+// organizeRuns 最近目录整理记录（持久化历史）
+func (s *Server) organizeRuns(c *gin.Context) {
+	if s.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	list, err := s.db.RecentOrganizeRuns(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// organizeRunLog 某次整理的完整日志（从数据库读）
+func (s *Server) organizeRunLog(c *gin.Context) {
+	if s.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
+		return
+	}
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	if id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的整理记录 ID"})
+		return
+	}
+	lines, err := s.db.OrganizeRunLogs(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, lines)
 }
 
 // ============ 任务 ============

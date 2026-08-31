@@ -15,6 +15,11 @@ type Client interface {
 	Move(ctx context.Context, srcDir, dstDir string, names []string) error
 }
 
+// Logger 整理日志输出接口（与 generator.Logger 同构，可复用 task.LogBuffer 或 api 侧收集器）
+type Logger interface {
+	Logf(level, format string, args ...any)
+}
+
 // Options 整理选项
 type Options struct {
 	TargetPath string // 待整理目录，如 /115/AV-cli
@@ -22,6 +27,9 @@ type Options struct {
 	IDMode     string // AV / FC2
 	DryRun     bool   // true 仅预览计划
 	Overwrite  bool   // 目标同名存在时删除后覆盖
+
+	// Logf 整理日志输出（nil 时不输出）。level: INFO / WARN / ERROR
+	Logf Logger
 
 	// Progress 非预览执行时，每成功处理一项调用一次（stage: organize / move）。
 	// done 为阶段内已处理数，total 为阶段内预估处理总数，op 为刚完成的移动计划项
@@ -50,6 +58,13 @@ type Organizer struct {
 	errs           []string
 }
 
+// logf 输出整理日志（无 Logger 时不输出）
+func (o *Organizer) logf(level, format string, args ...any) {
+	if o.opts.Logf != nil {
+		o.opts.Logf.Logf(level, format, args...)
+	}
+}
+
 // Run 执行整理，按 Mode 分派；返回计划与错误
 func Run(ctx context.Context, client Client, o Options) (*Result, error) {
 	org := &Organizer{
@@ -61,7 +76,22 @@ func Run(ctx context.Context, client Client, o Options) (*Result, error) {
 	}
 	res := &Result{}
 
-	switch strings.ToLower(o.Mode) {
+	mode := strings.ToLower(o.Mode)
+	prefix := "执行"
+	if o.DryRun {
+		prefix = "预览"
+	}
+	org.logf("INFO", "========== 目录整理（%s，%s 模式，%s） ==========", prefix, mode, o.IDMode)
+	org.logf("INFO", "目标目录: %s", o.TargetPath)
+	org.logf("INFO", ">>> 开始%s", prefix)
+	defer func() {
+		org.logf("INFO", "%s完成：共 %d 项", prefix, len(res.Plan))
+		if len(org.errs) > 0 {
+			org.logf("WARN", "处理过程中出现 %d 个错误", len(org.errs))
+		}
+	}()
+
+	switch mode {
 	case "organize":
 		items, err := org.client.List(ctx, o.TargetPath)
 		if err != nil {
@@ -111,10 +141,13 @@ func (o *Organizer) ensureDir(ctx context.Context, full string) {
 			return
 		}
 		if !o.pathExists(ctx, full) {
-			o.errs = append(o.errs, fmt.Sprintf("创建目录失败 %s: %v", full, err))
+			msg := fmt.Sprintf("创建目录失败 %s: %v", full, err)
+			o.errs = append(o.errs, msg)
+			o.logf("ERROR", "%s", msg)
 			return
 		}
 	}
+	o.logf("INFO", "创建目录 %s", full)
 	o.existingDirs[full] = true
 }
 
@@ -229,6 +262,7 @@ func (o *Organizer) organizeInside(ctx context.Context, items []driver.File) []M
 		oldBase, ext := splitExt(oldName)
 		baseCode, label, isSingle, ok := parseVideoID(oldBase, o.opts.IDMode)
 		if !ok {
+			o.logf("DEBUG", "未识别番号，跳过: %s", oldName)
 			continue
 		}
 		// uncensored 视为 -U 单部标签：单部且无 U 类标签时补上
@@ -244,12 +278,15 @@ func (o *Organizer) organizeInside(ctx context.Context, items []driver.File) []M
 
 		if o.opts.DryRun {
 			plan = append(plan, MoveOp{Old: oldAbs, New: cliNewAbs})
+			o.logf("INFO", "预览: %s → %s", oldAbs, cliNewAbs)
 			continue
 		}
 
+		o.logf("INFO", "识别 %s → 目标 %s", oldAbs, cliNewAbs)
 		o.ensureDir(ctx, cliFolder)
 		if o.renameAndMoveIntoCli(ctx, oldAbs, oldName, newName, cliFolder) {
 			plan = append(plan, MoveOp{Old: oldAbs, New: cliNewAbs})
+			o.logf("INFO", "移动 %s → %s", oldAbs, cliNewAbs)
 		}
 		done++
 		o.emitProgress("organize", done, total, MoveOp{Old: oldAbs, New: cliNewAbs})
@@ -272,15 +309,21 @@ func (o *Organizer) renameAndMoveIntoCli(ctx context.Context, oldAbs, oldName, n
 		renameTarget := joinPath(o.opts.TargetPath, newName)
 		if o.existingNames[newName] {
 			if !o.opts.Overwrite {
-				o.errs = append(o.errs, fmt.Sprintf("目标文件已存在，跳过: %s", renameTarget))
+				msg := fmt.Sprintf("目标文件已存在，跳过: %s", renameTarget)
+				o.errs = append(o.errs, msg)
+				o.logf("WARN", "%s", msg)
 				return false
 			}
 			o.removeIfExists(ctx, o.opts.TargetPath, newName)
+			o.logf("INFO", "删除同名目标 %s（覆盖）", renameTarget)
 		}
 		if err := o.client.Rename(ctx, joinPath(o.opts.TargetPath, oldName), newName); err != nil {
-			o.errs = append(o.errs, fmt.Sprintf("重命名失败 %s: %v", oldName, err))
+			msg := fmt.Sprintf("重命名失败 %s: %v", oldName, err)
+			o.errs = append(o.errs, msg)
+			o.logf("ERROR", "%s", msg)
 			return false
 		}
+		o.logf("INFO", "重命名 %s → %s", oldName, newName)
 		delete(o.existingNames, oldName)
 		o.existingNames[newName] = true
 		currentName = newName
@@ -291,13 +334,17 @@ func (o *Organizer) renameAndMoveIntoCli(ctx context.Context, oldAbs, oldName, n
 		delete(o.existingNames, currentName)
 		return true
 	}
+	o.logf("ERROR", "移动失败 %s → %s/%s", oldAbs, cliFolder, currentName)
 	if currentName != oldName {
 		// 回滚重命名
 		if err := o.client.Rename(ctx, joinPath(o.opts.TargetPath, currentName), oldName); err == nil {
+			o.logf("WARN", "回滚重命名 %s → %s", currentName, oldName)
 			delete(o.existingNames, currentName)
 			o.existingNames[oldName] = true
 		} else {
-			o.errs = append(o.errs, fmt.Sprintf("回滚重命名失败 %s: %v", currentName, err))
+			msg := fmt.Sprintf("回滚重命名失败 %s: %v", currentName, err)
+			o.errs = append(o.errs, msg)
+			o.logf("ERROR", "%s", msg)
 		}
 	}
 	return false
@@ -382,6 +429,7 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 
 		if o.opts.DryRun {
 			plan = append(plan, MoveOp{Old: oldAbs, New: newAbs})
+			o.logf("INFO", "预览: %s → %s", oldAbs, newAbs)
 			done++
 			o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})
 			continue
@@ -402,12 +450,15 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 
 		if names[folderName] {
 			if !o.opts.Overwrite {
-				o.errs = append(o.errs, fmt.Sprintf("目标文件夹已存在，跳过移动: %s", newAbs))
+				msg := fmt.Sprintf("目标文件夹已存在，跳过移动: %s", newAbs)
+				o.errs = append(o.errs, msg)
+				o.logf("WARN", "%s", msg)
 				done++
 				o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})
 				continue
 			}
 			// 覆盖模式：删除库内旧文件夹后移入
+			o.logf("INFO", "删除库内同名文件夹 %s（覆盖）", newAbs)
 			_ = o.client.Remove(ctx, newAbs)
 			delete(names, folderName)
 		}
@@ -415,6 +466,9 @@ func (o *Organizer) moveToLibrary(ctx context.Context, items []driver.File) []Mo
 		if o.safeMove(ctx, o.opts.TargetPath, baseTarget, folderName) {
 			names[folderName] = true
 			plan = append(plan, MoveOp{Old: oldAbs, New: newAbs})
+			o.logf("INFO", "移动 %s → %s", oldAbs, newAbs)
+		} else {
+			o.logf("ERROR", "移动失败 %s → %s", oldAbs, newAbs)
 		}
 		done++
 		o.emitProgress("move", done, total, MoveOp{Old: oldAbs, New: newAbs})

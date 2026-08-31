@@ -33,6 +33,26 @@ type Run struct {
 	Error     string    `json:"error"`
 }
 
+// OrganizeRun 目录整理运行记录
+type OrganizeRun struct {
+	ID        int64     `json:"id"`
+	Path      string    `json:"path"`
+	Mode      string    `json:"mode"`
+	IDMode    string    `json:"id_mode"`
+	StartAt   time.Time `json:"start_at"`
+	EndAt     time.Time `json:"end_at"`
+	Status    string    `json:"status"` // running / success / error
+	Moved     int       `json:"moved"`
+	Errors    string    `json:"errors"`
+}
+
+// OrganizeLogLine 目录整理日志行
+type OrganizeLogLine struct {
+	Time  time.Time `json:"time"`
+	Level string    `json:"level"`
+	Msg   string    `json:"msg"`
+}
+
 // Audit 审计记录
 type Audit struct {
 	ID     int64     `json:"id"`
@@ -120,6 +140,26 @@ func (d *DB) migrate() error {
 			detail TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_logs_time ON webhook_logs(time)`,
+		`CREATE TABLE IF NOT EXISTS organize_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			path TEXT NOT NULL,
+			mode TEXT NOT NULL,
+			id_mode TEXT NOT NULL,
+			start_at DATETIME NOT NULL,
+			end_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'running',
+			moved INTEGER NOT NULL DEFAULT 0,
+			errors TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_organize_runs_time ON organize_runs(start_at)`,
+		`CREATE TABLE IF NOT EXISTS organize_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id INTEGER NOT NULL,
+			time DATETIME NOT NULL,
+			level TEXT NOT NULL,
+			msg TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_organize_logs_run ON organize_logs(run_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.conn.Exec(s); err != nil {
@@ -262,6 +302,90 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		r.StartAt = start.Time
 		r.EndAt = end.Time
 		out = append(out, r)
+	}
+	return out, nil
+}
+
+// ============ organize ============
+
+// CreateOrganizeRun 创建目录整理运行记录，返回 ID
+func (d *DB) CreateOrganizeRun(path, mode, idMode string) (int64, error) {
+	res, err := d.conn.Exec(`INSERT INTO organize_runs (path, mode, id_mode, start_at, status) VALUES (?, ?, ?, ?, 'running')`,
+		path, mode, idMode, time.Now().UTC().Format(timeFmt))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// FinishOrganizeRun 结束目录整理运行记录
+func (d *DB) FinishOrganizeRun(id int64, status string, moved int, errMsg string) error {
+	_, err := d.conn.Exec(`UPDATE organize_runs SET end_at=?, status=?, moved=?, errors=? WHERE id=?`,
+		time.Now().UTC().Format(timeFmt), status, moved, nullStr(errMsg), id)
+	return err
+}
+
+// InsertOrganizeLogs 批量写入整理日志
+func (d *DB) InsertOrganizeLogs(runID int64, lines []OrganizeLogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO organize_logs (run_id, time, level, msg) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, l := range lines {
+		if _, err := stmt.Exec(runID, l.Time.UTC().Format(timeFmt), l.Level, l.Msg); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RecentOrganizeRuns 最近目录整理记录（按时间倒序）
+func (d *DB) RecentOrganizeRuns(limit int) ([]OrganizeRun, error) {
+	rows, err := d.conn.Query(`SELECT id, path, mode, id_mode, start_at, end_at, status, moved, COALESCE(errors,'')
+		FROM organize_runs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]OrganizeRun, 0)
+	for rows.Next() {
+		var r OrganizeRun
+		var errMsg sql.NullString
+		var start, end sql.NullTime
+		if err := rows.Scan(&r.ID, &r.Path, &r.Mode, &r.IDMode, &start, &end, &r.Status, &r.Moved, &errMsg); err != nil {
+			return nil, err
+		}
+		r.Errors = errMsg.String
+		r.StartAt = start.Time
+		r.EndAt = end.Time
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// OrganizeRunLogs 某次整理的完整日志
+func (d *DB) OrganizeRunLogs(runID int64) ([]OrganizeLogLine, error) {
+	rows, err := d.conn.Query(`SELECT time, level, msg FROM organize_logs WHERE run_id=? ORDER BY id`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]OrganizeLogLine, 0)
+	for rows.Next() {
+		var l OrganizeLogLine
+		if err := rows.Scan(&l.Time, &l.Level, &l.Msg); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
 	}
 	return out, nil
 }
