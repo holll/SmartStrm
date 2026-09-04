@@ -137,8 +137,8 @@ func (d *DB) DeleteTask(name string) error {
 
 // WebhookConfig 持久化的 webhook 配置
 type WebhookConfig struct {
-	Token          string                 `json:"token"`
-	EmbyDeleteSync config.EmbyDeleteSync  `json:"emby_delete_sync"`
+	Token          string                `json:"token"`
+	EmbyDeleteSync config.EmbyDeleteSync `json:"emby_delete_sync"`
 }
 
 // LoadWebhook 读取 webhook 配置；无记录时返回 false

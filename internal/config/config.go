@@ -3,21 +3,21 @@ package config
 
 // STRMConfig STRM 生成全局设置
 type STRMConfig struct {
-	MediaExt   []string `json:"media_ext"`   // 媒体文件后缀，这些文件生成 STRM
-	MediaSize  int      `json:"media_size"`  // 媒体文件大小阈值 MB，大于此才生成
-	CopyExt    []string `json:"copy_ext"`    // 复制到本地的文件后缀（刮削文件）
-	SaveDir    string   `json:"save_dir"`    // STRM 生成根目录（默认相对路径 ./strm）
-	URLEncode  bool     `json:"url_encode"`  // 对 STRM 内 URL 编码
-	StrmBase   string   `json:"strm_base"`   // 写入 STRM 的直链前缀（留空使用存储自身地址）
+	MediaExt  []string `json:"media_ext"`  // 媒体文件后缀，这些文件生成 STRM
+	MediaSize int      `json:"media_size"` // 媒体文件大小阈值 MB，大于此才生成
+	CopyExt   []string `json:"copy_ext"`   // 复制到本地的文件后缀（刮削文件）
+	SaveDir   string   `json:"save_dir"`   // STRM 生成根目录（默认相对路径 ./strm）
+	URLEncode bool     `json:"url_encode"` // 对 STRM 内 URL 编码
+	StrmBase  string   `json:"strm_base"`  // 写入 STRM 的直链前缀（留空使用存储自身地址）
 }
 
 // EmbyDeleteSync Emby 删除同步设置
 type EmbyDeleteSync struct {
 	Enabled        bool     `json:"enabled"`
-	StrmInEmby     string   `json:"strm_in_emby"`      // strm 目录在 Emby 容器内的路径
-	StoragePathMap string   `json:"storage_path_map"`  // strm 目录对应的存储内路径前缀
-	Storage        string   `json:"storage"`           // 删除操作使用的存储名
-	AllowedPrefix  []string `json:"allowed_prefix"`    // 只允许删除这些路径前缀，防误删
+	StrmInEmby     string   `json:"strm_in_emby"`     // strm 目录在 Emby 容器内的路径
+	StoragePathMap string   `json:"storage_path_map"` // strm 目录对应的存储内路径前缀
+	Storage        string   `json:"storage"`          // 删除操作使用的存储名
+	AllowedPrefix  []string `json:"allowed_prefix"`   // 只允许删除这些路径前缀，防误删
 }
 
 // WebhookConfig Webhook 设置
@@ -39,14 +39,14 @@ type Storage struct {
 
 // Task 任务定义
 type Task struct {
-	Name          string                  `json:"name"`
-	Storage       string                  `json:"storage"`
-	StoragePath   string                  `json:"storage_path"` // 存储中媒体文件路径
-	Crontab       string                  `json:"crontab"`      // 空则不定时
-	Incremental   bool                    `json:"incremental"`  // 增量生成；false 为同步
-	DirTimeCheck  bool                    `json:"dir_time_check"`
-	KeepLocalAst  bool                    `json:"keep_local_asset"` // 同步模式保留本地刮削文件
-	Plugins       map[string]PluginConfig `json:"plugins"`         // 任务级插件配置，覆盖全局
+	Name         string                  `json:"name"`
+	Storage      string                  `json:"storage"`
+	StoragePath  string                  `json:"storage_path"` // 存储中媒体文件路径
+	Crontab      string                  `json:"crontab"`      // 空则不定时
+	Incremental  bool                    `json:"incremental"`  // 增量生成；false 为同步
+	DirTimeCheck bool                    `json:"dir_time_check"`
+	KeepLocalAst bool                    `json:"keep_local_asset"` // 同步模式保留本地刮削文件
+	Plugins      map[string]PluginConfig `json:"plugins"`          // 任务级插件配置，覆盖全局
 }
 
 // Config 运行时配置（全部来自数据库与命令行参数，无配置文件）
@@ -56,11 +56,11 @@ type Config struct {
 		Username string `json:"-"` // 固定 admin
 	} `json:"-"`
 
-	STRM     STRMConfig               `json:"strm"`
-	Webhook  WebhookConfig            `json:"webhook"` // 数据库 webhook 表
-	Plugins  map[string]PluginConfig  `json:"plugins"` // 数据库 settings["plugins"]
-	Storages []Storage                `json:"storages"` // 数据库 storages 表
-	Tasks    []Task                   `json:"tasks"`    // 数据库 tasks 表
+	STRM     STRMConfig              `json:"strm"`
+	Webhook  WebhookConfig           `json:"webhook"`  // 数据库 webhook 表
+	Plugins  map[string]PluginConfig `json:"plugins"`  // 数据库 settings["plugins"]
+	Storages []Storage               `json:"storages"` // 数据库 storages 表
+	Tasks    []Task                  `json:"tasks"`    // 数据库 tasks 表
 }
 
 // DefaultSTRM 返回 STRM 设置默认值

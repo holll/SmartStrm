@@ -23,11 +23,11 @@ Go 语言实现的 STRM 生成工具（仅 STRM 相关功能）：OpenList/AList
 │                 │  任务 CRUD / 运行状态 / 并发互斥 / Cron / 日志 │    │
 │                 └───┬──────────────────────────────────────────┘    │
 │                     ▼                                                │
-│        ┌───────────────────────┐      ┌──────────────────────────┐  │
-│        │   generator.Generator │      │   organize.Organizer     │  │
-│        │  扫描→过滤→插件→生成    │      │  番号识别/命名规范/整理/移动 │  │
-│        └──────────┬────────────┘      └────────────┬─────────────┘  │
-│                   ▼                                ▼                 │
+│        ┌───────────────────────────────┐                        │
+│        │     generator.Generator       │                        │
+│        │     扫描→过滤→插件→生成        │                        │
+│        └───────────────┬───────────────┘                        │
+│                        ▼                                       │
 │        ┌────────────────────────────────────────────────────────┐  │
 │        │            driver.Driver (OpenList / AList)            │  │
 │        │   List(分页) / Remove / Rename / Mkdir / Move          │  │
@@ -47,7 +47,6 @@ Go 语言实现的 STRM 生成工具（仅 STRM 相关功能）：OpenList/AList
 | 调度 | `internal/task` | 任务模型、Cron 调度（robfig/cron，`cron.WithLocation(UTC+8)`）、运行状态、日志缓冲 |
 | 核心 | `internal/generator` | STRM 生成主流程（扫描→过滤→插件链→生成/清理） |
 | 扩展 | `internal/plugins` | 插件接口 + 5 个内置插件 |
-| 整理 | `internal/organize` | 网盘目录整理：番号识别、命名规范化、一步归入分类库（AV 按首字母 / FC2 根） |
 | 驱动 | `internal/driver` | 存储驱动抽象与 OpenList 实现（含按 base 共享的 API 限速器） |
 | 数据 | `internal/db` | SQLite 存储层：配置表 + 运行/日志/审计/webhook 日志 + 目录缓存 |
 | 版本 | `internal/version` | 构建版本信息 + GitHub 更新检查（10min 缓存） |
@@ -202,13 +201,6 @@ type Driver interface {
     Remove(ctx, path) error                            // 删除路径（文件或目录）
     Rename(ctx, path, newName string) error            // 重命名
 }
-
-// 整理器额外需要的操作（organize.Client 扩展接口，OpenList 满足）
-type Client interface {
-    driver.Driver
-    Mkdir(ctx, path string) error
-    Move(ctx, srcDir, dstDir string, names []string) error
-}
 ```
 
 ### 4.2 OpenList 实现要点
@@ -219,40 +211,12 @@ type Client interface {
 - `Data == null` → `ErrNotFound`
 - 错误统一：非 200 code 返回 `code + message`
 - **Remove**：OpenList 的 `/api/fs/remove` 要求 `{"dir": 父目录, "names": [名称]}`（AList 新版格式），传路径数组会报 "Empty file names"
+- OpenList 另实现 `Mkdir`/`Move`（协议能力，接口未要求，供需要建目录/移动的扩展使用）
 - `DownloadURL(path)` → `{base}/d{path}`（STRM 内容来源）
 
 ---
 
-## 5. 目录整理（internal/organize）
-
-移植自 alist_organizer：对网盘目录做番号识别 → 命名规范 → 按类归整。通过 `POST /api/organize` 触发（详见 api.md），不参与 STRM 任务调度链。
-
-### 5.1 三种模式
-
-| Mode | 行为 |
-|---|---|
-| `organize` | **一步入库**：遍历目录下散落的视频文件，识别番号后直接归入分类库（AV→`{目标目录去 -cli}/{首字母}/{番号}/`，FC2→`{目标目录去 -cli}/{番号}/`），同时重命名为规范名 |
-| `move` | **分类移动**：把已整理好的番号文件夹移入分类库（AV→`{目标目录去 -cli}/{首字母}/`，FC2→`{目标目录去 -cli}/`） |
-| `all` | organize 一步入库 + 移动 TargetPath 下遗留的标准番号文件夹（执行后重新扫描，预览只展示一步入库） |
-
-### 5.2 番号识别与命名规则（rules.go）
-
-- **AV**：`parseAvVideoID` 匹配 `^[a-z]{1,10}-?\d{2,5}v?`（可选 `-标签`；标签 `c/u/uc/cu` 视为单部）。`normalizeAvCode` 统一为 `前缀-数字`（不足千位补零，如 `hmn00035 → HMN-035`）
-- **FC2**：`parseFc2VideoID` 匹配 `fc2[-_\s]?ppv[-_\s]?\d{5,8}`，规范为 `FC2-PPV-{数字}`（无码源标记 `-c/-u/-uc/-cu` 视为单部）
-- 文件名含 `uncensored` 且单部时补 `-U` 标签
-- **单部**：目录与文件名均取规范化番号（含单部标签）；**分集**：固定保留分集编号（`{番号}-{标签}`）
-- 边界防护：番号匹配结束后紧跟 `[0-9a-zA-Z_]` 视为不匹配（如 `ADN-468-x`），避免误吞
-
-### 5.3 运行要点
-
-- 多次 `Mkdir`/`List`/`Remove` 结果缓存于内存（`Organizer` 结构），避免重复 `fs_list`
-- `Move` 失败且 `Overwrite=true` 时先删目标同名再重试；重命名失败会回滚
-- `DryRun=true` 只产出计划不落盘（返回 `{plan:[{old,new}], errors:[]}`），前端可预览
-- 错误收集进 `errors` 数组而非中断整体
-
----
-
-## 6. 数据与配置（SQLite）
+## 5. 数据与配置（SQLite）
 
 驱动 `modernc.org/sqlite`（纯 Go 无 CGO）。库文件固定 `data/data.db`（自动创建 data 目录），**整个 `data/` 目录即备份单元**。
 
@@ -292,7 +256,7 @@ type Client interface {
 
 ---
 
-## 7. HTTP 接口概览
+## 6. HTTP 接口概览
 
 细化：认证/全部路由/SSE 协议/Webhook 详见 **[api.md](api.md)**。要点：
 
@@ -305,7 +269,7 @@ type Client interface {
 
 ---
 
-## 8. 并发、停止与日志
+## 7. 并发、停止与日志
 
 - `task.Manager` 用 `running map` 互斥：同一任务并发触发返回「任务正在运行中」；Cron 链 `SkipIfStillRunning` 跳过重叠
 - **停止**：每次 `Run` 创建 `context.WithCancel` 存入 `cancel map`；`Stop` 调 cancel → 生成器 `walkDir` 每轮检查 `ctx.Err()` 中断，net/http 的 `NewRequestWithContext` 一并取消进行中的网络请求；已停止任务错误固定「任务已停止」
@@ -314,7 +278,7 @@ type Client interface {
 
 ---
 
-## 9. 安全设计
+## 8. 安全设计
 
 | 面 | 措施 |
 |---|---|
@@ -327,7 +291,7 @@ type Client interface {
 
 ---
 
-## 10. 启动流程（cmd/server/main.go）
+## 9. 启动流程（cmd/server/main.go）
 
 ```
 解析 -port / -reset-password
@@ -342,16 +306,15 @@ type Client interface {
 
 ---
 
-## 11. 测试
+## 10. 测试
 
-以包内单元测试为主，覆盖：OpenList 列表/分页、限速器、目录时间缓存、目录整理（番号解析/命名/整理计划）、Webhook 触发与 Emby 删除同步、任务停止（context 取消）、插件、版本比较。开发期另有 mock OpenList 服务器 + 冒烟脚本做全链路验证，正式运行不依赖。
+以包内单元测试为主，覆盖：OpenList 列表/分页、限速器、目录时间缓存、Webhook 触发与 Emby 删除同步、任务停止（context 取消）、插件、版本比较。开发期另有 mock OpenList 服务器 + 冒烟脚本做全链路验证，正式运行不依赖。
 
 ---
 
-## 12. 已知边界与后续扩展
+## 11. 已知边界与后续扩展
 
 - 驱动仅实现 OpenList/AList（`driver.New` 校验，接口已抽象，WebDAV/本地可扩展）
-- `Rename` 已实现，供目录整理重命名使用
+- `Rename`/`Mkdir`/`Move` 已实现（预留，暂无业务调用）
 - 管理页为单 HTML 无构建产物；如需复杂 UI 可独立前端对接 REST API
 - `strm_base` 指向的直链需对 Emby 可达；签名直链（OpenList `/d/` url 参数）未实现
-- organize 的 `move` 模式 AV/FC2 均支持：AV 按首字母分库（`{库}/{首字母}/`），FC2 直接入库根（`{库}/`，无首字母分类）

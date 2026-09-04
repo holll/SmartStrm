@@ -158,11 +158,11 @@ type Manager struct {
 	cron    *cron.Cron
 	entryID map[string]cron.EntryID // 任务名 → Cron 条目
 	mu      sync.Mutex
-	running map[string]bool   // 正在运行的任务
+	running map[string]bool               // 正在运行的任务
 	cancel  map[string]context.CancelFunc // 运行中任务的取消函数
-	results map[string]*Result // 最近一次运行结果
-	logs    map[string]*LogBuffer // 任务日志缓冲
-	onState func()             // 状态变化回调（管理页轮询用）
+	results map[string]*Result            // 最近一次运行结果
+	logs    map[string]*LogBuffer         // 任务日志缓冲
+	onState func()                        // 状态变化回调（管理页轮询用）
 }
 
 // Result 任务运行状态

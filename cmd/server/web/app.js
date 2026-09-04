@@ -82,7 +82,7 @@ async function doLogin() {
 function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; closeStateStream(); api('/api/logout','POST').catch(()=>{}); showLogin(); }
 
 function showPage(name) {
-  ['overview','tasks','storages','browse','organize','plugins','audit','webhooklog','settings','about'].forEach(p => {
+  ['overview','tasks','storages','browse','plugins','audit','webhooklog','settings','about'].forEach(p => {
     document.getElementById('page-'+p).style.display = p===name ? '' : 'none';
     const navBtn = document.getElementById('nav-'+p);
     navBtn.classList.toggle('active', p===name);
@@ -104,7 +104,6 @@ function showPage(name) {
   if (name==='tasks') loadTasks();
   if (name==='storages') loadStorages();
   if (name==='browse') loadBrowse();
-  if (name==='organize') loadOrganize();
   if (name==='plugins') loadPlugins();
   if (name==='audit') loadAudit();
   if (name==='webhooklog') loadWebhookLogs();
@@ -943,236 +942,6 @@ async function loadWebhookLogs() {
   } catch(e) {}
 }
 
-// ============ 目录整理 ============
-let ORG_POLL = null; // 整理进度状态轮询定时器
-const ORG_MAX_LINES = 2000; // 整理日志缓冲上限
-let ORG_LINES = []; // 整理日志行缓冲（{time,level,msg}）
-
-async function loadOrganize() {
-  if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
-  const sel = document.getElementById('org-storage');
-  sel.innerHTML = (STORAGES||[]).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
-  // 页面（重）打开时恢复后台正在进行的整理进度，或显示上次完成结果
-  loadOrganizeHistory();
-  pollOrganizeStatus();
-}
-
-// 整理日志渲染：行缓冲 + 合并写入单文本节点
-function orgLogFlush() {
-  const box = document.getElementById('orgLog');
-  if (!box) return;
-  box.textContent = ORG_LINES.join('\n') || '日志为空';
-  box.scrollTop = box.scrollHeight;
-}
-function orgLogAppend(line) {
-  ORG_LINES.push(formatLogLine(line));
-  if (ORG_LINES.length > ORG_MAX_LINES) {
-    ORG_LINES.splice(0, ORG_LINES.length - ORG_MAX_LINES);
-  }
-  orgLogFlush();
-}
-function orgLogReset() {
-  ORG_LINES = [];
-  orgLogFlush();
-}
-function clearOrganizeLog() {
-  orgLogReset();
-  document.getElementById('orgErrors').style.display = 'none';
-}
-
-// 统一更新整理进度条（兼容 SSE progress 帧与 /api/organize/status）
-function updateOrgProgressUI(st) {
-  const progWrap = document.getElementById('orgProgressWrap');
-  const progBar = document.getElementById('orgProgressBar');
-  const progText = document.getElementById('orgProgressText');
-  if (!st) return;
-  progWrap.classList.remove('d-none');
-  const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
-  progBar.style.width = pct + '%';
-  progBar.setAttribute('aria-valuenow', pct);
-  const stage = st.stage === 'move' ? '移动分类' : '整理入库';
-  progText.textContent = `（${stage}）${st.done}/${st.total}  ${st.old} → ${st.new}`;
-}
-
-// 渲染整理错误盒
-function renderOrgErrors(errors) {
-  const errBox = document.getElementById('orgErrors');
-  if (errors && errors.length) {
-    errBox.style.display = ''; errBox.style.whiteSpace = 'pre-wrap';
-    errBox.innerHTML = '<strong>处理失败：</strong><div>' + errors.map(esc).join('\n') + '</div>';
-  } else { errBox.style.display = 'none'; }
-}
-
-// 从数据库加载某次整理的完整日志（历史回看）
-async function viewOrganizeRun(runId, path) {
-  document.getElementById('logModalTitle').textContent = '整理日志 - ' + (path || '') + ' #' + runId;
-  const box = document.getElementById('taskLog');
-  box.textContent = '加载中…';
-  openDialog('taskLogModal');
-  try {
-    const lines = (await api('/api/organize/runs/' + runId + '/log')) || [];
-    box.textContent = lines.map(formatLogLine).join('\n') || '日志为空';
-    box.scrollTop = box.scrollHeight;
-  } catch(e) {
-    box.textContent = '加载失败: ' + e.message;
-  }
-}
-
-// 整理历史列表
-async function loadOrganizeHistory() {
-  try {
-    const runs = (await api('/api/organize/runs?limit=50')) || [];
-    const rows = document.getElementById('orgHistoryRows');
-    if (!runs.length) { rows.innerHTML = '<tr><td colspan="10" class="empty">暂无整理记录</td></tr>'; return; }
-    rows.innerHTML = runs.map(r => `<tr>
-      <td class="num">${r.id}</td>
-      <td style="word-break:break-all">${esc(r.path)}</td>
-      <td>${esc(r.mode)}</td>
-      <td>${esc(r.id_mode)}</td>
-      <td class="num">${fmtTime(r.start_at)}</td>
-      <td class="num">${fmtDur(r.start_at, r.end_at)}</td>
-      <td>${organizeRunStatusTag(r.status)}</td>
-      <td class="num">${r.moved}</td>
-      <td style="color:var(--red);font-size:12px;max-width:200px;word-break:break-all">${esc(r.errors||'')}</td>
-      <td><button class="btn btn-outline-info" title="查看日志" onclick="viewOrganizeRun(${r.id},'${jsAttr(r.path)}')"><i class="bi bi-journal-text"></i></button></td></tr>`).join('');
-  } catch(e) {}
-}
-
-function organizeRunStatusTag(s) {
-  if (s === 'running') return '<span class="tag on">运行中</span>';
-  if (s === 'success') return '<span class="tag on">成功</span>';
-  if (s === 'stopped') return '<span class="tag off">已停止</span>';
-  return '<span class="tag off">失败</span>';
-}
-
-// 轮询整理进度：网页关闭后整理在后台继续执行，重开页面据此恢复进度与结果
-function pollOrganizeStatus() {
-  clearTimeout(ORG_POLL); ORG_POLL = null;
-  api('/api/organize/status').then(st => {
-    if (st.running) {
-      updateOrgProgressUI(st);
-      // 后台整理进行中：若已有 run_id，实时日志可从数据库增量拉取（历史表中会显示 running）
-      loadOrganizeHistory();
-      ORG_POLL = setTimeout(pollOrganizeStatus, 1500);
-      return;
-    }
-    // 非运行中：停止轮询
-    if (st.finished) {
-      // 页面关闭期间整理已完成：展示结果并填满进度条
-      const progBar = document.getElementById('orgProgressBar');
-      const progText = document.getElementById('orgProgressText');
-      document.getElementById('orgProgressWrap').classList.remove('d-none');
-      progBar.style.width = '100%'; progBar.setAttribute('aria-valuenow', 100);
-      progText.textContent = `完成，共 ${(st.plan||[]).length} 项`;
-      renderOrgErrors(st.errors || []);
-      // 有 run_id 时从数据库加载完整日志（含关闭期间产生的内容）
-      if (st.run_id) {
-        api('/api/organize/runs/' + st.run_id + '/log').then(lines => {
-          ORG_LINES = (lines||[]).map(formatLogLine);
-          orgLogFlush();
-        }).catch(() => {});
-      }
-      loadOrganizeHistory();
-    } else {
-      // 无活动中整理：隐藏进度条
-      const wrap = document.getElementById('orgProgressWrap');
-      if (wrap && !wrap.classList.contains('d-none')) wrap.classList.add('d-none');
-    }
-  }).catch(() => {
-    // 网络异常：延迟重试
-    ORG_POLL = setTimeout(pollOrganizeStatus, 5000);
-  });
-}
-
-async function organizeRun(dryRun) {
-  const planBtn = document.getElementById('orgPlanBtn');
-  const runBtn = document.getElementById('orgRunBtn');
-  const btn = dryRun ? planBtn : runBtn;
-  btn.disabled = true; const old = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' + (dryRun ? '预览中…' : '执行中…');
-  const progWrap = document.getElementById('orgProgressWrap');
-  const progBar = document.getElementById('orgProgressBar');
-  const progText = document.getElementById('orgProgressText');
-  // 开始前清空上次日志与错误
-  orgLogReset();
-  renderOrgErrors(null);
-  // 执行模式显示进度条；预览通常秒级完成，不显示
-  if (!dryRun) {
-    progWrap.classList.remove('d-none');
-    progBar.style.width = '0%';
-    progBar.setAttribute('aria-valuenow', 0);
-    progText.textContent = '准备中…';
-  }
-  try {
-    const resp = await fetch('/api/organize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
-      body: JSON.stringify({
-        storage: document.getElementById('org-storage').value,
-        path: document.getElementById('org-path').value.trim(),
-        mode: document.getElementById('org-mode').value,
-        id_mode: document.getElementById('org-idmode').value,
-        dry_run: dryRun,
-        overwrite: document.getElementById('org-overwrite').checked,
-      })
-    });
-    if (resp.status === 401) { showLogin(); throw new Error('未登录'); }
-    if (!resp.ok) {
-      const ed = await resp.json().catch(() => ({}));
-      throw new Error(ed.error || ('HTTP ' + resp.status));
-    }
-    // 流式解析 SSE：progress 帧更新进度，log 帧追加日志，done 帧刷新历史
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '', plan = [], errors = [], runID = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
-        let event = 'message', data = '';
-        for (const line of frame.split('\n')) {
-          if (line.startsWith('event: ')) event = line.slice(7);
-          else if (line.startsWith('data: ')) data += line.slice(6);
-        }
-        if (!data) continue;
-        let d;
-        try { d = JSON.parse(data); } catch { continue; }
-        if (event === 'log') {
-          orgLogAppend(d); // {time,level,msg}
-        } else if (event === 'progress') {
-          updateOrgProgressUI(d); // stage/done/total/old/new 与 status 结构一致
-        } else if (event === 'done') {
-          plan = d.plan || []; errors = d.errors || []; runID = d.run_id || 0;
-        } else if (event === 'error') {
-          throw new Error(d.error || '执行失败');
-        }
-      }
-    }
-    renderOrgErrors(errors);
-    // 非预览：日志已在 SSE 期间实时输出；预览（不落库）无 log 帧，直接渲染预览行
-    if (dryRun) {
-      const now = new Date().toISOString();
-      ORG_LINES = plan.map(p => fmtLogTime(now) + ' 预览: ' + p.old + ' → ' + p.new);
-      orgLogFlush();
-    }
-    if (!dryRun) {
-      progBar.style.width = '100%';
-      progBar.setAttribute('aria-valuenow', 100);
-      progText.textContent = `完成，共 ${plan.length} 项`;
-      if (runID) loadOrganizeHistory();
-    }
-    toast(dryRun ? '预览完成' : '执行完成');
-  } catch(e) {
-    const errBox = document.getElementById('orgErrors');
-    errBox.style.display = ''; errBox.innerHTML = esc(e.message || String(e));
-    toast(e.message || String(e), 'danger');
-    if (!dryRun) progWrap.classList.add('d-none');
-  } finally { btn.disabled = false; btn.innerHTML = old; }
-}
-
 // ============ 设置 ============
 async function loadSettings() {
   try {
@@ -1409,7 +1178,7 @@ async function loadAll() {
 
 // 初始化：hash 定位页面，无 hash 默认总览（等 app 显示后再切页，保证入场动画生效）
 (function init() {
-  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|organize|plugins|audit|webhooklog|settings|about)$/);
+  const m = location.hash.match(/^#\/(overview|tasks|storages|browse|plugins|audit|webhooklog|settings|about)$/);
   const target = m ? m[1] : 'overview';
   if (TOKEN) {
     api('/api/settings').then(() => { showApp(); showPage(target); loadAll(); }).catch(() => showLogin());

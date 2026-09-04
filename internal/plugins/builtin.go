@@ -13,9 +13,9 @@ import (
 // ContentReplace 生成时替换 STRM 内的文本内容，支持正则
 type ContentReplace struct{}
 
-func (p *ContentReplace) ID() string                { return "content_replace" }
-func (p *ContentReplace) Name() string              { return "STRM内容替换" }
-func (p *ContentReplace) Version() string           { return "0.1" }
+func (p *ContentReplace) ID() string      { return "content_replace" }
+func (p *ContentReplace) Name() string    { return "STRM内容替换" }
+func (p *ContentReplace) Version() string { return "0.1" }
 func (p *ContentReplace) Enabled(cfg config.PluginConfig) bool {
 	return cfg != nil && getBool(cfg, "enabled", false)
 }

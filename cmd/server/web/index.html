@@ -58,7 +58,6 @@
       <button id="nav-storages" class="nav-link" onclick="showPage('storages')"><i class="bi bi-hdd-network"></i> 存储管理</button>
       <button id="nav-browse"   class="nav-link" onclick="showPage('browse')"><i class="bi bi-folder2-open"></i> 存储浏览</button>
       <div class="nav-group-label">工具</div>
-      <button id="nav-organize" class="nav-link" onclick="showPage('organize')"><i class="bi bi-folder-symlink"></i> 目录整理</button>
       <button id="nav-plugins"  class="nav-link" onclick="showPage('plugins')"><i class="bi bi-plug"></i> 插件管理</button>
       <div class="nav-group-label">系统</div>
       <button id="nav-audit"    class="nav-link" onclick="showPage('audit')"><i class="bi bi-journal-check"></i> 审计日志</button>
@@ -209,56 +208,6 @@
           <div class="pt-2 border-top"><small class="opacity-50" id="browseCount"></small></div>
         </div>
       </div>
-    </div>
-
-    <!-- 目录整理 -->
-    <div id="page-organize" style="display:none">
-      <div class="card">
-        <div class="card-head"><h5 class="mb-0"><i class="bi bi-folder-symlink me-2 text-primary"></i>目录整理 <span class="text-muted small fw-normal">散落视频识别番号，一步归入分类库：AV→{目录}/首字母/番号/，FC2→{目录}/番号/</span></h5></div>
-        <div class="card-body">
-          <div class="form-row"><label for="org-storage">存储</label><select class="form-select" id="org-storage"></select></div>
-          <div class="form-row"><label for="org-path">目标目录</label><input type="text" class="form-control" id="org-path" placeholder="/115/AV-cli" spellcheck="false"></div>
-          <div class="form-row"><label for="org-mode">模式</label>
-            <select class="form-select" id="org-mode">
-              <option value="all">all（整理 + 移动遗留分类）</option>
-              <option value="organize">organize（仅整理入库）</option>
-              <option value="move">move（仅移动分类）</option>
-            </select>
-            <div class="tip">organize/all 一步入库：如 /115/AV-cli/SVVRT-067-U.mp4 → /115/AV/S/SVVRT-067-U；/115/FC2-cli/xxx.mp4 → /115/FC2/xxx。move 仅把已整理好的番号文件夹移入分类库</div>
-          </div>
-          <div class="form-row"><label for="org-idmode">番号模式</label>
-            <select class="form-select" id="org-idmode" style="max-width:200px"><option value="AV">AV</option><option value="FC2">FC2</option></select>
-          </div>
-          <div class="check-row"><input type="checkbox" class="form-check-input me-2" id="org-overwrite" checked><label class="form-check-label" for="org-overwrite">目标同名存在时删除后覆盖</label><div class="tip ms-1">115 删除进回收站，可恢复</div></div>
-          <div class="d-flex gap-2 mt-2">
-            <button class="btn btn-outline-secondary" id="orgPlanBtn" onclick="organizeRun(true)"><i class="bi bi-eye me-1"></i>预览</button>
-            <button class="btn btn-primary" id="orgRunBtn" onclick="organizeRun(false)"><i class="bi bi-lightning me-1"></i>执行</button>
-          </div>
-          <div class="d-none mt-3" id="orgProgressWrap">
-            <div class="progress mb-1" style="height:10px"><div class="progress-bar progress-bar-striped progress-bar-animated" id="orgProgressBar" role="progressbar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div></div>
-            <small class="text-muted" id="orgProgressText"></small>
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head">
-          <h5 class="mb-0"><i class="bi bi-list-check me-2 text-primary"></i>整理日志</h5>
-          <button class="btn btn-outline-secondary btn-sm" onclick="clearOrganizeLog()"><i class="bi bi-trash me-1"></i>清空显示</button>
-        </div>
-        <div class="table-wrap">
-          <pre class="task-log" id="orgLog">日志为空</pre>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h5 class="mb-0"><i class="bi bi-clock-history me-2 text-primary"></i>整理历史 <span class="text-muted small fw-normal">最近 50 次，持久化</span></h5></div>
-        <div class="table-wrap">
-          <table class="table table-hover">
-            <thead><tr><th class="num">#</th><th>目标目录</th><th>模式</th><th>番号</th><th class="num">开始</th><th class="num">耗时</th><th>状态</th><th class="num">移动</th><th>错误</th><th>操作</th></tr></thead>
-            <tbody id="orgHistoryRows"></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="alert alert-danger" id="orgErrors" style="display:none"></div>
     </div>
 
     <!-- 插件管理 -->

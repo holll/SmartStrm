@@ -125,53 +125,8 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ---
 
-## 5. 目录整理
 
-### POST /api/organize
-网盘目录整理（番号识别→命名规范化→按类归整，移植自 alist_organizer）。
-请求：
-```json
-{
-  "storage": "115",
-  "path": "/115/AV-cli",
-  "mode": "organize",      // organize | move | all
-  "id_mode": "AV",         // AV | FC2
-  "dry_run": true,         // true 仅预览计划
-  "overwrite": false
-}
-```
-响应为 SSE 流（`text/event-stream`），事件：
-- `progress`（执行中，可多次）：`{"stage":"organize|move","done":N,"total":N,"old":"...","new":"..."}`（预览几乎瞬时，通常无 progress）
-- `done`（结束）：`{"plan":[{"old":"...","new":"..."}],"errors":[]}`
-- `error`（失败）：`{"error":"..."}`
-
-示例 `done` 帧数据：
-```json
-{
-  "plan": [
-    { "old": "/115/AV-cli/ADN-468 - 电影.mp4", "new": "/115/AV/A/ADN-468/ADN-468.mp4" }
-  ],
-  "errors": []
-}
-```
-- 模式说明：`organize`=一步入库（散落视频识别番号后直接归入分类库并规范命名：AV→`{目标目录去 -cli}/{首字母}/{番号}/`，FC2→`{目标目录去 -cli}/{番号}/`）；`move`=把已整理好的番号文件夹移入分类库（AV→`{目标目录去 -cli}/{首字母}/`，FC2→`{目标目录去 -cli}/`）；`all`=organize 一步入库 + 移动 TargetPath 下遗留的标准番号文件夹
-- `dry_run=true` 只返回计划不落盘，适合先预览
-- 非预览执行含**防并发锁**：已有整理运行时再次提交返回 `error` 帧「已有目录整理正在进行」；整理在**后台执行**，网页关闭不中断
-- 执行会写入审计（含 mode/dry_run/处理项数）
-- 失败：400（参数/模式未知）、404（存储不存在）
-
-### GET /api/organize/status
-返回最近一次后台整理的进度快照（网页关闭后整理继续，重开页面轮询此接口恢复进度与结果）：
-```json
-{ "running": true, "stage": "organize", "done": 5, "total": 100,
-  "old": "/115/AV-cli/x.mp4", "new": "/115/AV/X/x", "started_at": "2026-08-26T12:00:00+08:00" }
-```
-- `running=false, finished=true` 时附最近一次结果 `plan`/`errors`；无活动整理时各字段为零值
-- 仅非预览（`dry_run=false`）整理写入该状态
-
----
-
-## 6. 任务
+## 5. 任务
 
 ### 任务模型（config.Task）
 
@@ -258,7 +213,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ---
 
-## 7. 插件
+## 6. 插件
 
 ### GET /api/plugins
 全局插件列表与配置：
@@ -286,7 +241,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ---
 
-## 8. Webhook 配置管理
+## 7. Webhook 配置管理
 
 ### GET /api/webhook/info
 ```json
@@ -330,7 +285,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ---
 
-## 9. 运行历史 / 审计 / 关于
+## 8. 运行历史 / 审计 / 关于
 
 ### GET /api/runs?limit=50
 最近运行记录（倒序）：
@@ -357,7 +312,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 ```json
 [ { "id": 1, "time": "...", "user": "admin", "action": "login", "target": "", "detail": "" } ]
 ```
-`action` 取值：login / login_failed / logout / password_change / settings_update / storage_* / task_* / plugin_update / webhook_update / webhook_regenerate / organize / emby_delete / emby_delete_failed。
+`action` 取值：login / login_failed / logout / password_change / settings_update / storage_* / task_* / plugin_update / webhook_update / webhook_regenerate / emby_delete / emby_delete_failed。
 
 ### GET /api/about?refresh=1
 版本与 GitHub 更新检查：
@@ -373,7 +328,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ---
 
-## 10. SSE 协议
+## 9. SSE 协议
 
 两个只读流式接口，均为 `text/event-stream`，`Cache-Control: no-cache`，服务端已对这两条路径排除 gzip。
 
@@ -404,7 +359,7 @@ data: {}
 
 ---
 
-## 11. 外部 Webhook（无需登录）
+## 10. 外部 Webhook（无需登录）
 
 > token 即密钥：路径中的 token 必须与 `webhook.token` 一致，否则 403 `{"error":"无效的 token"}`。
 > 两入口共用同一套处理逻辑，按请求体自动分派。
@@ -441,7 +396,7 @@ Emby 删除同步。兼容旧地址 `/webhook/{token}`——统一入口按 body
 
 ---
 
-## 12. 附录：数据模型
+## 11. 附录：数据模型
 
 config 结构源码：`internal/config/config.go`（`STRMConfig` / `EmbyDeleteSync` / `WebhookConfig` / `Storage` / `Task` / `PluginConfig`）。
 
@@ -455,7 +410,7 @@ config 结构源码：`internal/config/config.go`（`STRMConfig` / `EmbyDeleteSy
 `{generated, copied, removed, skipped, skipped_dirs, list_failed, errors}`。
 
 ### 数据库表
-`admin` / `settings` / `storages` / `tasks` / `webhook` / `dir_cache` / `runs` / `task_logs` / `audit_logs` / `webhook_logs`（10 张，详见 architecture.md §6）。
+`admin` / `settings` / `storages` / `tasks` / `webhook` / `dir_cache` / `runs` / `task_logs` / `audit_logs` / `webhook_logs`（10 张，详见 architecture.md §5）。
 
 ### OpenList 上游 API（只读参考）
 未见官方后端的异构响应时，可参考仓库根 [`openlist-api-llms.txt`](../openlist-api-llms.txt)（OpenList 服务端接口签名，非本项目 API）。

@@ -22,7 +22,6 @@ import (
 	"smartstrm/internal/config"
 	"smartstrm/internal/db"
 	"smartstrm/internal/driver"
-	"smartstrm/internal/organize"
 	"smartstrm/internal/plugins"
 	"smartstrm/internal/task"
 	"smartstrm/internal/version"
@@ -43,98 +42,6 @@ type Server struct {
 	stateID    int64
 	stateConns map[int64]stateConn // 活跃状态流连接（任务状态变化时广播）
 	stateTimer *time.Timer         // 状态广播节流定时器
-
-	orgMu      sync.Mutex // 目录整理防并发锁
-	orgRunning bool       // 是否有整理正在后台执行
-	orgStatus  *orgStatus // 整理进度（供页面重新打开后恢复显示）
-}
-
-// orgStatus 目录整理进度状态：后台执行期间/完成后断点续查。
-// 网页关闭后整理继续，重新打开页面通过 GET /api/organize/status 恢复进度与结果
-type orgStatus struct {
-	mu       sync.Mutex
-	Running  bool              `json:"running"`
-	Stage    string            `json:"stage,omitempty"`
-	Path     string            `json:"path,omitempty"`
-	Mode     string            `json:"mode,omitempty"`
-	IDMode   string            `json:"id_mode,omitempty"`
-	Done     int               `json:"done"`
-	Total    int               `json:"total"`
-	Old      string            `json:"old,omitempty"`
-	New      string            `json:"new,omitempty"`
-	Started  time.Time         `json:"started_at,omitempty"`
-	Updated  time.Time         `json:"updated_at,omitempty"`
-	Finished bool              `json:"finished"`
-	RunID    int64             `json:"run_id,omitempty"`
-	Plan     []organize.MoveOp `json:"plan,omitempty"`
-	Errors   []string          `json:"errors,omitempty"`
-}
-
-// reset 开始一次后台整理前重置状态
-func (o *orgStatus) reset(path, mode, idMode string, runID int64) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.Running = true
-	o.Finished = false
-	o.Stage = ""
-	o.Path = path
-	o.Mode = mode
-	o.IDMode = idMode
-	o.Done = 0
-	o.Total = 0
-	o.Old = ""
-	o.New = ""
-	o.Started = time.Now()
-	o.Updated = time.Now()
-	o.RunID = runID
-	o.Plan = nil
-	o.Errors = nil
-}
-
-// setProgress 更新进度字段
-func (o *orgStatus) setProgress(stage string, done, total int, op organize.MoveOp) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.Stage = stage
-	o.Done = done
-	o.Total = total
-	o.Old = op.Old
-	o.New = op.New
-	o.Updated = time.Now()
-}
-
-// finish 标记整理完成并保存结果
-func (o *orgStatus) finish(plan []organize.MoveOp, errors []string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.Running = false
-	o.Finished = true
-	o.Plan = plan
-	o.Errors = errors
-	o.Updated = time.Now()
-}
-
-// snapshot 返回当前状态快照（供查询）
-func (o *orgStatus) snapshot() *orgStatus {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return &orgStatus{
-		Running:  o.Running,
-		Stage:    o.Stage,
-		Path:     o.Path,
-		Mode:     o.Mode,
-		IDMode:   o.IDMode,
-		Done:     o.Done,
-		Total:    o.Total,
-		Old:      o.Old,
-		New:      o.New,
-		Started:  o.Started,
-		Updated:  o.Updated,
-		Finished: o.Finished,
-		RunID:    o.RunID,
-		Plan:     o.Plan,
-		Errors:   o.Errors,
-	}
 }
 
 // sseConn 一条活跃的 SSE 日志流连接
@@ -159,7 +66,6 @@ func New(cfg *config.Config, mgr *task.Manager, database *db.DB) *Server {
 		tokens:     map[string]time.Time{},
 		sseConns:   map[int64]sseConn{},
 		stateConns: map[int64]stateConn{},
-		orgStatus:  &orgStatus{},
 	}
 	// 任务状态变化（开始/结束/panic 收尾）时广播给状态流订阅者
 	mgr.SetOnState(s.onStateChanged)
@@ -191,11 +97,6 @@ func (s *Server) Register(r *gin.Engine) {
 		api.DELETE("/storages/:name", s.deleteStorage)
 		// 存储浏览
 		api.GET("/storages/:name/list", s.browseStorage)
-		// 目录整理（cli 内部整理 / 移动到分类目录）
-		api.POST("/organize", s.organize)
-		api.GET("/organize/status", s.organizeStatus)
-		api.GET("/organize/runs", s.organizeRuns)
-		api.GET("/organize/runs/:id/log", s.organizeRunLog)
 		// 任务
 		api.GET("/tasks", s.listTasks)
 		api.POST("/tasks", s.addTask)
@@ -218,15 +119,15 @@ func (s *Server) Register(r *gin.Engine) {
 		api.PUT("/webhook", s.putWebhook)
 		api.POST("/webhook/regenerate", s.regenerateWebhook)
 		api.GET("/webhook/logs", s.webhookLogs)
-	// 运行历史 / 审计
-	api.GET("/runs", s.recentRuns)
-	api.GET("/runs/:id/log", s.runLog)
-	api.GET("/tasks/:name/history", s.taskHistory)
-	api.GET("/audit", s.recentAudits)
-	// 关于（版本 + 更新检查）
-	api.GET("/about", s.about)
-	// 任务状态推送（前端以此替代轮询）
-	api.GET("/events/stream", s.stateStream)
+		// 运行历史 / 审计
+		api.GET("/runs", s.recentRuns)
+		api.GET("/runs/:id/log", s.runLog)
+		api.GET("/tasks/:name/history", s.taskHistory)
+		api.GET("/audit", s.recentAudits)
+		// 关于（版本 + 更新检查）
+		api.GET("/about", s.about)
+		// 任务状态推送（前端以此替代轮询）
+		api.GET("/events/stream", s.stateStream)
 	}
 }
 
@@ -665,7 +566,9 @@ func (s *Server) browseStorage(c *gin.Context) {
 	var files []driver.File
 	if refresh {
 		// 强制刷新：优先走带 refresh=true 的加载，绕过 OpenList/AList 目录缓存
-		if lr, ok := drv.(interface{ ListRefresh(context.Context, string) ([]driver.File, error) }); ok {
+		if lr, ok := drv.(interface {
+			ListRefresh(context.Context, string) ([]driver.File, error)
+		}); ok {
 			files, err = lr.ListRefresh(c.Request.Context(), path)
 		} else {
 			files, err = drv.List(c.Request.Context(), path)
@@ -680,243 +583,13 @@ func (s *Server) browseStorage(c *gin.Context) {
 	c.JSON(http.StatusOK, files)
 }
 
-// organizeReq 目录整理请求
-type organizeReq struct {
-	Storage   string `json:"storage"`
-	Path      string `json:"path"`
-	Mode      string `json:"mode"`     // organize / move / all
-	IDMode    string `json:"id_mode"`  // AV / FC2
-	DryRun    bool   `json:"dry_run"`  // true 仅预览计划
-	Overwrite bool   `json:"overwrite"`
-}
-
-// organize 执行目录整理（识别番号→一步入库→移动遗留分类）。
-// 响应以 SSE 流式推送：执行中推 progress 帧（大量文件时前端可显示进度），结束推 done / error 帧
-func (s *Server) organize(c *gin.Context) {
-	var req organizeReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数解析失败"})
-		return
-	}
-	if req.Storage == "" || req.Path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 storage 或 path"})
-		return
-	}
-	st := findStorage(s.cfg, req.Storage)
-	if st == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "存储不存在"})
-		return
-	}
-
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "不支持流式输出"})
-		return
-	}
-
-	ctx := c.Request.Context()
-	drv := driver.NewOpenList(st.URL, st.Token)
-
-	// 整理执行使用后台 context，脱离 HTTP 请求生命周期：
-	// 网页关闭（请求 context 取消）只停止 SSE 推送，不中断正在执行的移动/建目录/重命名。
-	execCtx := context.Background()
-	evCh := make(chan string, 512)
-
-	// 日志收集器：SSE 推 log 帧，同时缓存本次日志供结束落库
-	var logMu sync.Mutex
-	var logLines []orgLogLine
-	logf := func(level, format string, args ...any) {
-		line := orgLogLine{Time: time.Now(), Level: level, Msg: fmt.Sprintf(format, args...)}
-		logMu.Lock()
-		logLines = append(logLines, line)
-		logMu.Unlock()
-		frame := organizeEventFrame("log", gin.H{"time": line.Time, "level": line.Level, "msg": line.Msg})
-		select {
-		case evCh <- frame:
-		default:
-		}
-	}
-
-	// 后台整理（非预览）持防并发锁并记录进度状态；预览瞬时完成无需锁
-	var orgRunID int64
-	if !req.DryRun {
-		s.orgMu.Lock()
-		if s.orgRunning {
-			s.orgMu.Unlock()
-			io.WriteString(c.Writer, organizeEventFrame("error", gin.H{"error": "已有目录整理正在进行，请稍后再试"}))
-			flusher.Flush()
-			return
-		}
-		s.orgRunning = true
-		s.orgMu.Unlock()
-		if s.db != nil {
-			orgRunID, _ = s.db.CreateOrganizeRun(req.Path, req.Mode, req.IDMode)
-		}
-		s.orgStatus.reset(req.Path, req.Mode, req.IDMode, orgRunID)
-	}
-
-	orgLogger := &organizeLogger{logf: logf}
-	go func() {
-		// 无论正常完成还是异常退出，都释放防并发锁
-		defer func() {
-			s.orgMu.Lock()
-			s.orgRunning = false
-			s.orgMu.Unlock()
-		}()
-		defer close(evCh)
-		res, err := organize.Run(execCtx, drv, organize.Options{
-			TargetPath: req.Path,
-			Mode:       req.Mode,
-			IDMode:     req.IDMode,
-			DryRun:     req.DryRun,
-			Overwrite:  req.Overwrite,
-			Logf:       orgLogger,
-			Progress: func(stage string, done, total int, op organize.MoveOp) {
-				if !req.DryRun {
-					s.orgStatus.setProgress(stage, done, total, op)
-				}
-				frame := organizeEventFrame("progress", gin.H{
-					"stage": stage, "done": done, "total": total,
-					"old": op.Old, "new": op.New,
-				})
-				select {
-				case evCh <- frame:
-				default:
-				}
-			},
-		})
-		if err != nil {
-			// 出错也落库：记录 error 状态与已输出日志
-			s.persistOrganizeRun(orgRunID, req.DryRun, "error", nil, []string{err.Error()}, &logMu, &logLines)
-			if !req.DryRun {
-				s.orgStatus.finish(nil, []string{err.Error()})
-			}
-			evCh <- organizeEventFrame("error", gin.H{"error": err.Error()})
-			return
-		}
-		// 落库：整理记录 + 本次日志（仅非预览）
-		status := "success"
-		if len(res.Errors) > 0 {
-			status = "error"
-		}
-		s.persistOrganizeRun(orgRunID, req.DryRun, status, res.Plan, res.Errors, &logMu, &logLines)
-		if !req.DryRun {
-			s.orgStatus.finish(res.Plan, res.Errors)
-		}
-		evCh <- organizeEventFrame("done", gin.H{"run_id": orgRunID, "plan": res.Plan, "errors": res.Errors, "dry_run": req.DryRun})
-		s.audit("", "organize", req.Storage+req.Path, fmt.Sprintf("mode=%s dry_run=%v 处理 %d 项", req.Mode, req.DryRun, len(res.Plan)))
-	}()
-
-	for {
-		select {
-		case frame, ok := <-evCh:
-			if !ok {
-				flusher.Flush()
-				return
-			}
-			io.WriteString(c.Writer, frame)
-			flusher.Flush()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// organizeLogger 适配 organize.Logger 接口
-type organizeLogger struct {
-	logf func(level, format string, args ...any)
-}
-
-func (l *organizeLogger) Logf(level, format string, args ...any) {
-	l.logf(level, format, args...)
-}
-
-// persistOrganizeRun 持久化一次整理运行记录与日志（预览不入库）
-func (s *Server) persistOrganizeRun(orgRunID int64, dryRun bool, status string, plan []organize.MoveOp, errors []string, logMu *sync.Mutex, logLines *[]orgLogLine) {
-	if dryRun || s.db == nil || orgRunID <= 0 {
-		return
-	}
-	errMsg := ""
-	if len(errors) > 0 {
-		errMsg = strings.Join(errors, "\n")
-	}
-	_ = s.db.FinishOrganizeRun(orgRunID, status, len(plan), errMsg)
-	logMu.Lock()
-	dbLines := make([]db.OrganizeLogLine, len(*logLines))
-	for i, l := range *logLines {
-		dbLines[i] = db.OrganizeLogLine{Time: l.Time, Level: l.Level, Msg: l.Msg}
-	}
-	logMu.Unlock()
-	_ = s.db.InsertOrganizeLogs(orgRunID, dbLines)
-}
-
-// organizeEventFrame 生成一条 SSE 事件帧
-func organizeEventFrame(event string, data any) string {
-	b, _ := json.Marshal(data)
-	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, b)
-}
-
-// orgLogLine 目录整理日志行（SSE log 帧载荷 / 落库缓存）
-type orgLogLine struct {
-	Time  time.Time `json:"time"`
-	Level string    `json:"level"`
-	Msg   string    `json:"msg"`
-}
-
-// organizeStatus 返回当前整理进度快照。网页关闭后整理在后台继续，
-// 重新打开页面轮询此接口即可恢复进度条显示与最终结果
-func (s *Server) organizeStatus(c *gin.Context) {
-	c.JSON(http.StatusOK, s.orgStatus.snapshot())
-}
-
-// organizeRuns 最近目录整理记录（持久化历史）
-func (s *Server) organizeRuns(c *gin.Context) {
-	if s.db == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
-		return
-	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if limit < 1 || limit > 200 {
-		limit = 50
-	}
-	list, err := s.db.RecentOrganizeRuns(limit)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, list)
-}
-
-// organizeRunLog 某次整理的完整日志（从数据库读）
-func (s *Server) organizeRunLog(c *gin.Context) {
-	if s.db == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
-		return
-	}
-	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	if id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的整理记录 ID"})
-		return
-	}
-	lines, err := s.db.OrganizeRunLogs(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, lines)
-}
-
 // ============ 任务 ============
 
 func (s *Server) listTasks(c *gin.Context) {
 	type taskView struct {
 		config.Task
-		NextRun  *time.Time `json:"next_run,omitempty"`
-		Running  bool       `json:"running"`
+		NextRun *time.Time `json:"next_run,omitempty"`
+		Running bool       `json:"running"`
 	}
 	next := s.mgr.NextRuns()
 	status := s.mgr.Status()
@@ -1117,12 +790,12 @@ func (s *Server) taskStatus(c *gin.Context) {
 	status := s.mgr.Status()
 	next := s.mgr.NextRuns()
 	type view struct {
-		Running bool              `json:"running"`
-		Start   time.Time         `json:"start"`
-		End     time.Time         `json:"end"`
-		Result  *json.RawMessage  `json:"result,omitempty"`
-		Error   string            `json:"error,omitempty"`
-		NextRun *time.Time        `json:"next_run,omitempty"`
+		Running bool             `json:"running"`
+		Start   time.Time        `json:"start"`
+		End     time.Time        `json:"end"`
+		Result  *json.RawMessage `json:"result,omitempty"`
+		Error   string           `json:"error,omitempty"`
+		NextRun *time.Time       `json:"next_run,omitempty"`
 	}
 	out := map[string]view{}
 	for name, st := range status {
@@ -1150,9 +823,9 @@ func (s *Server) taskStatus(c *gin.Context) {
 func (s *Server) strmReplace(c *gin.Context) {
 	name := c.Param("name")
 	var req struct {
-		FindText   string `json:"find_text"`
+		FindText    string `json:"find_text"`
 		ReplaceText string `json:"replace_text"`
-		RegexMode  bool   `json:"regex_mode"`
+		RegexMode   bool   `json:"regex_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})

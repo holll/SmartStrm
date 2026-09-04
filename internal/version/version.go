@@ -38,16 +38,16 @@ type Release struct {
 
 // UpdateInfo 关于页展示的全部信息
 type UpdateInfo struct {
-	Version     string    `json:"version"`               // 当前版本（去 v 前缀）
-	Commit      string    `json:"commit,omitempty"`      // 构建提交
-	BuildTime   string    `json:"build_time,omitempty"`  // 构建时间
-	RepoURL     string    `json:"repo_url"`              // 项目地址
-	IsLatest    bool      `json:"is_latest"`             // 是否为最新版本
-	Latest      string    `json:"latest,omitempty"`      // 最新版本（tag 原文）
-	LatestURL   string    `json:"latest_url,omitempty"`  // 最新版本下载页
+	Version     string    `json:"version"`                // 当前版本（去 v 前缀）
+	Commit      string    `json:"commit,omitempty"`       // 构建提交
+	BuildTime   string    `json:"build_time,omitempty"`   // 构建时间
+	RepoURL     string    `json:"repo_url"`               // 项目地址
+	IsLatest    bool      `json:"is_latest"`              // 是否为最新版本
+	Latest      string    `json:"latest,omitempty"`       // 最新版本（tag 原文）
+	LatestURL   string    `json:"latest_url,omitempty"`   // 最新版本下载页
 	PublishedAt string    `json:"published_at,omitempty"` // 最新版本发布时间
-	CheckedAt   time.Time `json:"checked_at"`            // 本次检查时间
-	Error       string    `json:"error,omitempty"`       // 检查失败原因
+	CheckedAt   time.Time `json:"checked_at"`             // 本次检查时间
+	Error       string    `json:"error,omitempty"`        // 检查失败原因
 }
 
 var (
