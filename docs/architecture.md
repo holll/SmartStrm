@@ -262,8 +262,8 @@ type Driver interface {
 
 - 认证：无内置会话 cookie，`POST /api/login` 换内存 Bearer token（有效期 7 天），请求头 `Authorization: Bearer {token}`
 - 管理页为 SPA：静态文件逐文件注册 + ETag（304）+ NoRoute 兜底返回 index.html；`/api`、`/webhook` 前缀的非 API 路径返回 JSON 404
-- gzip 中间件对 `/api/tasks/:name/log/stream`、`/api/events/stream` 排除（实时流式输出）
-- **SSE**：任务实时日志 `/api/tasks/:name/log/stream`（`event: line, data: {json}`）；任务状态推送 `/api/events/stream`（`event: state, data: {}` 空帧，前端收到后按需拉取）；改密/登出主动断开活跃 SSE 连接
+- gzip 中间件对 `/api/tasks/log/stream`、`/api/events/stream` 排除（实时流式输出）
+- **SSE**：任务实时日志 `/api/tasks/log/stream`（`event: line, data: {json}`）；任务状态推送 `/api/events/stream`（`event: state, data: {}` 空帧，前端收到后按需拉取）；改密/登出主动断开活跃 SSE 连接
 - Webhook 统一入口 `/webhook/:token`（按请求体含 `Event` 字段自动分派 Emby/触发），`/webhook/emby/:token` 保留兼容旧地址
 - 关于页 `/api/about`：版本 + GitHub 更新检查（holll/SmartStrm releases/latest，10min 缓存，`?refresh=1` 强制）
 

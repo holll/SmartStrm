@@ -533,7 +533,7 @@ function startLogStream(name) {
   const box = document.getElementById('taskLog');
   logReset();
   box.textContent = '';
-  fetch('/api/tasks/'+encodeURIComponent(name)+'/log/stream?after=0', {
+  fetch('/api/tasks/log/stream?name='+encodeURIComponent(name)+'&after=0', {
     headers: { 'Authorization': 'Bearer ' + TOKEN },
     signal: ctrl.signal
   }).then(async resp => {
@@ -579,10 +579,10 @@ function closeLogStream() {
   }
 }
 
-async function runTask(name) { try { await api('/api/tasks/'+encodeURIComponent(name)+'/run','POST'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
+async function runTask(name) { try { await api('/api/tasks/run?name='+encodeURIComponent(name),'POST'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
 async function stopTask(name) {
   if(!confirm('确认停止任务 '+name+'？')) return;
-  try { await api('/api/tasks/'+encodeURIComponent(name)+'/stop','POST'); }
+  try { await api('/api/tasks/stop?name='+encodeURIComponent(name),'POST'); }
   catch(e){ toast(e.message, 'danger'); }
   loadTasks(); // 无论成功与否都刷新，避免任务刚结束时的 409 导致残留"运行中"
   // 若停止的是日志弹窗正在查看的任务，关闭弹窗
@@ -591,7 +591,7 @@ async function stopTask(name) {
   }
 }
 async function runAll() { try { await api('/api/tasks/run_all','POST'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
-async function delTask(name) { if(!confirm('确认删除任务 '+name+'？')) return; try { await api('/api/tasks/'+encodeURIComponent(name),'DELETE'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
+async function delTask(name) { if(!confirm('确认删除任务 '+name+'？')) return; try { await api('/api/tasks?name='+encodeURIComponent(name),'DELETE'); loadTasks(); } catch(e){toast(e.message, 'danger');} }
 
 async function strmReplace(name) {
   const find = prompt('查找文本（支持正则，例如 alist\\.hollc\\.cn）');
@@ -599,7 +599,7 @@ async function strmReplace(name) {
   const replace = prompt('替换为');
   if (replace === null) return;
   const useRegex = confirm('使用正则模式？\n确定=正则  取消=纯文本');
-  try { const d = await api('/api/tasks/'+encodeURIComponent(name)+'/strm_replace','POST',{find_text:find,replace_text:replace,regex_mode:useRegex}); toast('已替换 '+d.count+' 个文件'); } catch(e){toast(e.message, 'danger');}
+  try { const d = await api('/api/tasks/strm_replace?name='+encodeURIComponent(name),'POST',{find_text:find,replace_text:replace,regex_mode:useRegex}); toast('已替换 '+d.count+' 个文件'); } catch(e){toast(e.message, 'danger');}
 }
 
 let TASK_SAVE_DIR = null; // 生成根目录缓存（任务编辑弹窗显示保存路径用）
@@ -735,7 +735,7 @@ async function taskReplaceAction() {
   if (!taskName) { toast('请先填写任务名称', 'warning'); return; }
   if (!find) { toast('请填写查找文本', 'warning'); return; }
   try {
-    const d = await api('/api/tasks/'+encodeURIComponent(taskName)+'/strm_replace','POST',{find_text:find,replace_text:replace,regex_mode:true});
+    const d = await api('/api/tasks/strm_replace?name='+encodeURIComponent(taskName),'POST',{find_text:find,replace_text:replace,regex_mode:true});
     toast('已替换 ' + d.count + ' 个文件');
   } catch(e){ toast(e.message, 'danger'); }
 }
@@ -746,7 +746,7 @@ async function taskOverwriteAction() {
   if (!taskName) { toast('请先填写任务名称', 'warning'); return; }
   if (!confirm('全量覆写将清空任务 ' + taskName + ' 目录并强制重新生成所有文件，确认继续？')) return;
   try {
-    await api('/api/tasks/'+encodeURIComponent(taskName)+'/overwrite','POST');
+    await api('/api/tasks/overwrite?name='+encodeURIComponent(taskName),'POST');
     toast('已开始全量覆写');
     closeTaskToolModal();
   } catch(e){ toast(e.message, 'danger'); }
@@ -758,7 +758,7 @@ async function taskClearAction() {
   if (!taskName) { toast('请先填写任务名称', 'warning'); return; }
   if (!confirm('一键清除将删除任务 ' + taskName + ' 目录下的所有文件，此操作不可恢复！确认继续？')) return;
   try {
-    await api('/api/tasks/'+encodeURIComponent(taskName)+'/clear','POST');
+    await api('/api/tasks/clear?name='+encodeURIComponent(taskName),'POST');
     toast('已清除任务目录');
     closeTaskToolModal();
   } catch(e){ toast(e.message, 'danger'); }
@@ -790,7 +790,7 @@ async function saveTask() {
   const btn = document.getElementById('saveTaskBtn');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
-    if (window._editTask) { await api('/api/tasks/'+encodeURIComponent(window._editTask),'PUT',body); }
+    if (window._editTask) { await api('/api/tasks?name='+encodeURIComponent(window._editTask),'PUT',body); }
     else { await api('/api/tasks','POST',body); }
     closeDialog('taskDialog'); loadTasks();
   } catch(e){ toast(e.message, 'danger'); }

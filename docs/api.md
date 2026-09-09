@@ -1,6 +1,6 @@
 # SmartStrm-Go API 文档
 
-本项目 HTTP 接口完整参考：管理 REST API（`/api/*`）、SSE 推送（`/api/events/stream`、`/api/tasks/:name/log/stream`）、外部 Webhook（`/webhook/*`）。
+本项目 HTTP 接口完整参考：管理 REST API（`/api/*`）、SSE 推送（`/api/events/stream`、`/api/tasks/log/stream`）、外部 Webhook（`/webhook/*`）。
 
 > 架构说明见 [architecture.md](architecture.md)，用户手册见 [README](../README.md)
 > 路由定义源码：`internal/api/api.go`、`internal/webhook/webhook.go`；数据模型见文末附录。
@@ -152,13 +152,13 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 ### POST /api/tasks
 请求：任务模型 JSON。`name/storage/storage_path` 必填，重名 409。成功后触发 Cron 热重载。
 
-### PUT /api/tasks/:name / DELETE /api/tasks/:name
-修改（body 为完整任务模型，name 以 URL 为准）/ 删除。均触发 Cron 热重载；404 = 不存在。
+### PUT /api/tasks?name={任务名} / DELETE /api/tasks?name={任务名}
+修改（body 为完整任务模型，`name` 以查询参数为准）/ 删除。均触发 Cron 热重载；404 = 不存在。
 
-### POST /api/tasks/:name/run
+### POST /api/tasks/run?name={任务名}
 立即运行（**异步**：立刻返回 `{"ok":true}`，任务在后台执行）。同名任务已在运行 → **409** `{"error":"任务正在运行中"}`。
 
-### POST /api/tasks/:name/stop
+### POST /api/tasks/stop?name={任务名}
 停止运行中任务（context 取消，扫描中的网络请求一并中断）。未在运行 → 409。
 
 ### POST /api/tasks/run_all
@@ -181,7 +181,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 - `result` 仅在运行结束后存在；正在运行时为 `null`/缺省
 - `next_run` 是该任务下次 Cron 触发时间；未运行过（无 result）的任务也有 `start/end` 零值
 
-### GET /api/tasks/:name/log?after={seq}
+### GET /api/tasks/log?name={任务名}&after={seq}
 任务日志**增量轮询**。`after` 为上次拿到的 `after` 值，缺省 0（取全部）。
 响应 200：
 ```json
@@ -194,10 +194,10 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 ```
 `level` 取值为 INFO/WARN/ERROR 等；`seq` 单调递增，前端用 `after` 续传。
 
-### GET /api/tasks/:name/log/stream?after={seq}
+### GET /api/tasks/log/stream?name={任务名}&after={seq}
 任务日志 **SSE 流**（替代轮询）：连接建立先发 `(after, 快照]` 区间历史，再实时推送增量。事件格式见 [§10](#10-sse-协议)。框架会保持连接，业务侧不超时，**需跳过 gzip**（服务端已自动排除）。
 
-### POST /api/tasks/:name/strm_replace
+### POST /api/tasks/strm_replace?name={任务名}
 批量替换该任务已生成 STRM 的内容（换域名/端口后无需重新生成）。
 请求：
 ```json
@@ -205,10 +205,10 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 ```
 响应 `{"ok":true,"count":12}`（count=实际发生替换的文件数）。正则无效返回 400。
 
-### POST /api/tasks/:name/overwrite
+### POST /api/tasks/overwrite?name={任务名}
 **全量覆写**：删除任务目录 → 删除该任务 `dir_cache`（强制忽略目录时间检查）→ 重新生成。响应 `{"ok":true}`。
 
-### POST /api/tasks/:name/clear
+### POST /api/tasks/clear?name={任务名}
 **一键清除**：删除任务目录下所有文件（不动配置/缓存）。响应 `{"ok":true}`。
 
 ---
@@ -304,7 +304,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 [ { "time": "...", "level": "INFO", "msg": "..." } ]
 ```
 
-### GET /api/tasks/:name/history?limit=20
+### GET /api/tasks/history?name={任务名}&limit=20
 某任务运行历史（结构同 /api/runs，按任务过滤）。
 
 ### GET /api/audit?limit=100
@@ -334,7 +334,7 @@ token 缺失/过期：`401 {"error":"未登录"}`。过期 token 在每次请求
 
 ### 事件格式
 
-任务日志流（`/api/tasks/:name/log/stream`）：
+任务日志流（`/api/tasks/log/stream`）：
 ```
 event: line
 data: {"seq":40,"time":"2026-08-19T08:00:05+08:00","level":"INFO","msg":"扫描目录 /FC2"}

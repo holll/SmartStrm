@@ -98,19 +98,21 @@ func (s *Server) Register(r *gin.Engine) {
 		// 存储浏览
 		api.GET("/storages/:name/list", s.browseStorage)
 		// 任务
+		// 任务名允许包含 "/"，若放在路径参数中（/tasks/:name/...），编码后的 %2F
+		// 会被路由器按解码后的路径匹配而拆成多段导致 404，故任务名一律用查询参数 name 传递
 		api.GET("/tasks", s.listTasks)
 		api.POST("/tasks", s.addTask)
-		api.PUT("/tasks/:name", s.updateTask)
-		api.DELETE("/tasks/:name", s.deleteTask)
-		api.POST("/tasks/:name/run", s.runTask)
-		api.POST("/tasks/:name/stop", s.stopTask)
-		api.GET("/tasks/:name/log", s.taskLog)
-		api.GET("/tasks/:name/log/stream", s.taskLogStream)
+		api.PUT("/tasks", s.updateTask)
+		api.DELETE("/tasks", s.deleteTask)
+		api.POST("/tasks/run", s.runTask)
+		api.POST("/tasks/stop", s.stopTask)
+		api.GET("/tasks/log", s.taskLog)
+		api.GET("/tasks/log/stream", s.taskLogStream)
 		api.POST("/tasks/run_all", s.runAll)
 		api.GET("/tasks/status", s.taskStatus)
-		api.POST("/tasks/:name/strm_replace", s.strmReplace)
-		api.POST("/tasks/:name/overwrite", s.overwriteTask)
-		api.POST("/tasks/:name/clear", s.clearTaskDir)
+		api.POST("/tasks/strm_replace", s.strmReplace)
+		api.POST("/tasks/overwrite", s.overwriteTask)
+		api.POST("/tasks/clear", s.clearTaskDir)
 		// 插件
 		api.GET("/plugins", s.listPlugins)
 		api.PUT("/plugins/:id", s.updatePlugin)
@@ -122,7 +124,7 @@ func (s *Server) Register(r *gin.Engine) {
 		// 运行历史 / 审计
 		api.GET("/runs", s.recentRuns)
 		api.GET("/runs/:id/log", s.runLog)
-		api.GET("/tasks/:name/history", s.taskHistory)
+		api.GET("/tasks/history", s.taskHistory)
 		api.GET("/audit", s.recentAudits)
 		// 关于（版本 + 更新检查）
 		api.GET("/about", s.about)
@@ -322,7 +324,7 @@ func (s *Server) taskHistory(c *gin.Context) {
 	if limit < 1 || limit > 200 {
 		limit = 20
 	}
-	list, err := s.db.TaskRuns(c.Param("name"), limit)
+	list, err := s.db.TaskRuns(taskName(c), limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -636,8 +638,12 @@ func (s *Server) addTask(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// taskName 取任务名（查询参数 name）。
+// 任务名允许包含 "/"，不能放在路径参数中（见 Register 注释），故统一走查询参数
+func taskName(c *gin.Context) string { return c.Query("name") }
+
 func (s *Server) updateTask(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	var t config.Task
 	if err := c.ShouldBindJSON(&t); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
@@ -663,7 +669,7 @@ func (s *Server) updateTask(c *gin.Context) {
 }
 
 func (s *Server) deleteTask(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	for i := range s.cfg.Tasks {
 		if s.cfg.Tasks[i].Name == name {
 			s.cfg.Tasks = append(s.cfg.Tasks[:i], s.cfg.Tasks[i+1:]...)
@@ -683,7 +689,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 }
 
 func (s *Server) runTask(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	if err := s.mgr.Run(name); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
@@ -694,7 +700,7 @@ func (s *Server) runTask(c *gin.Context) {
 
 // stopTask 停止任务
 func (s *Server) stopTask(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	if err := s.mgr.Stop(name); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
@@ -703,9 +709,9 @@ func (s *Server) stopTask(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// taskLog 任务日志增量拉取：GET /api/tasks/:name/log?after=<seq>
+// taskLog 任务日志增量拉取：GET /api/tasks/log?name=<任务名>&after=<seq>
 func (s *Server) taskLog(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	after, _ := strconv.ParseInt(c.Query("after"), 10, 64)
 	logbuf := s.mgr.Log(name)
 	lines := logbuf.Since(after)
@@ -715,10 +721,10 @@ func (s *Server) taskLog(c *gin.Context) {
 	})
 }
 
-// taskLogStream 任务日志 SSE 流：GET /api/tasks/:name/log/stream?after=<seq>
+// taskLogStream 任务日志 SSE 流：GET /api/tasks/log/stream?name=<任务名>&after=<seq>
 // 先发送 [after, 快照] 历史，再实时推送增量行；连接断开自动注销订阅
 func (s *Server) taskLogStream(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	after, _ := strconv.ParseInt(c.Query("after"), 10, 64)
 	logbuf := s.mgr.Log(name)
 
@@ -821,7 +827,7 @@ func (s *Server) taskStatus(c *gin.Context) {
 
 // strmReplace 批量替换任务已生成的 STRM 内容
 func (s *Server) strmReplace(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	var req struct {
 		FindText    string `json:"find_text"`
 		ReplaceText string `json:"replace_text"`
@@ -880,7 +886,7 @@ func (s *Server) strmReplace(c *gin.Context) {
 
 // overwriteTask 全量覆写：清空任务目录后重新生成（仿原版任务工具）
 func (s *Server) overwriteTask(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	if !s.taskExists(name) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
@@ -911,7 +917,7 @@ func (s *Server) overwriteTask(c *gin.Context) {
 
 // clearTaskDir 一键清除：删除任务目录下所有文件（仿原版任务工具）
 func (s *Server) clearTaskDir(c *gin.Context) {
-	name := c.Param("name")
+	name := taskName(c)
 	if !s.taskExists(name) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
