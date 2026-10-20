@@ -1,6 +1,16 @@
 // Package config 定义运行时配置结构（持久化于数据库 settings 表，无配置文件）
 package config
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/robfig/cron/v3"
+)
+
 // STRMConfig STRM 生成全局设置
 type STRMConfig struct {
 	MediaExt  []string `json:"media_ext"`  // 媒体文件后缀，这些文件生成 STRM
@@ -51,6 +61,7 @@ type Task struct {
 
 // Config 运行时配置（全部来自数据库与命令行参数，无配置文件）
 type Config struct {
+	mu     sync.RWMutex
 	Server struct {
 		Port     int    `json:"-"` // 命令行 -port
 		Username string `json:"-"` // 固定 admin
@@ -80,4 +91,115 @@ func DefaultSTRM() STRMConfig {
 // DefaultPlugins 返回插件全局配置默认值
 func DefaultPlugins() map[string]PluginConfig {
 	return map[string]PluginConfig{}
+}
+
+// Snapshot returns an isolated deep copy. Runtime readers must never retain live fields.
+func (c *Config) Snapshot() *Config {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.clone()
+}
+func (c *Config) clone() *Config {
+	out := &Config{STRM: c.STRM, Webhook: c.Webhook, Plugins: ClonePlugins(c.Plugins), Storages: append([]Storage(nil), c.Storages...), Tasks: append([]Task(nil), c.Tasks...)}
+	out.Server = c.Server
+	out.STRM.MediaExt = append([]string(nil), c.STRM.MediaExt...)
+	out.STRM.CopyExt = append([]string(nil), c.STRM.CopyExt...)
+	out.Webhook.EmbyDeleteSync.AllowedPrefix = append([]string(nil), c.Webhook.EmbyDeleteSync.AllowedPrefix...)
+	for i := range out.Tasks {
+		out.Tasks[i].Plugins = ClonePlugins(out.Tasks[i].Plugins)
+	}
+	return out
+}
+
+// Replace publishes a complete configuration. Callers serialize read/modify/write operations.
+func (c *Config) Replace(next *Config) {
+	n := next.Snapshot()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Server, c.STRM, c.Webhook, c.Plugins, c.Storages, c.Tasks = n.Server, n.STRM, n.Webhook, n.Plugins, n.Storages, n.Tasks
+}
+func cloneValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m := map[string]any{}
+		for k, v := range x {
+			m[k] = cloneValue(v)
+		}
+		return m
+	case []any:
+		a := make([]any, len(x))
+		for i, v := range x {
+			a[i] = cloneValue(v)
+		}
+		return a
+	case []string:
+		return append([]string(nil), x...)
+	default:
+		return v
+	}
+}
+func ClonePlugins(in map[string]PluginConfig) map[string]PluginConfig {
+	if in == nil {
+		return nil
+	}
+	out := map[string]PluginConfig{}
+	for id, cfg := range in {
+		m := PluginConfig{}
+		for k, v := range cfg {
+			m[k] = cloneValue(v)
+		}
+		out[id] = m
+	}
+	return out
+}
+
+// TaskDir accepts nested names, but rejects traversal, aliases and symlink components.
+func TaskDir(root, name string) (string, error) {
+	if name == "" || strings.ContainsAny(name, "\\\x00:") || strings.HasPrefix(name, "/") {
+		return "", fmt.Errorf("非法任务名")
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("非法任务路径组件")
+		}
+	}
+	base, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(base, filepath.FromSlash(name))
+	// Reject existing symlinks, including ancestors of the configured root.
+	for p := dst; ; p = filepath.Dir(p) {
+		if st, e := os.Lstat(p); e == nil && st.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("任务路径包含符号链接: %s", p)
+		} else if e != nil && !os.IsNotExist(e) {
+			return "", e
+		}
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	return dst, nil
+}
+func ValidateTask(root string, t Task, tasks []Task, replacing string) error {
+	if _, err := TaskDir(root, t.Name); err != nil {
+		return err
+	}
+	if t.Storage == "" || t.StoragePath == "" {
+		return fmt.Errorf("存储、路径不能为空")
+	}
+	if t.Crontab != "" {
+		if _, err := cron.ParseStandard(t.Crontab); err != nil {
+			return fmt.Errorf("定时表达式无效: %w", err)
+		}
+	}
+	for _, other := range tasks {
+		if other.Name == replacing {
+			continue
+		}
+		if t.Name == other.Name || strings.HasPrefix(t.Name, other.Name+"/") || strings.HasPrefix(other.Name, t.Name+"/") {
+			return fmt.Errorf("任务目录重叠: %s", other.Name)
+		}
+	}
+	return nil
 }

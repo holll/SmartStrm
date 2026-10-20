@@ -22,6 +22,7 @@ import (
 	"smartstrm/internal/config"
 	"smartstrm/internal/db"
 	"smartstrm/internal/driver"
+	"smartstrm/internal/generator"
 	"smartstrm/internal/plugins"
 	"smartstrm/internal/task"
 	"smartstrm/internal/version"
@@ -33,8 +34,9 @@ type Server struct {
 	mgr *task.Manager
 	db  *db.DB
 
-	mu     sync.Mutex
-	tokens map[string]time.Time // token → 过期时间
+	configMu sync.Mutex
+	mu       sync.Mutex
+	tokens   map[string]time.Time // token → 过期时间
 
 	sseID    int64
 	sseConns map[int64]sseConn // 活跃 SSE 日志流连接（登出/改密时强制断开）
@@ -92,6 +94,9 @@ func (s *Server) Register(r *gin.Engine) {
 		api.PUT("/settings", s.putSettings)
 		// 存储
 		api.GET("/storages", s.listStorages)
+		api.PUT("/storages", s.updateStorage)
+		api.DELETE("/storages", s.deleteStorage)
+		api.GET("/storage/list", s.browseStorage)
 		api.POST("/storages", s.addStorage)
 		api.PUT("/storages/:name", s.updateStorage)
 		api.DELETE("/storages/:name", s.deleteStorage)
@@ -184,6 +189,14 @@ func (s *Server) stateStream(c *gin.Context) {
 	ch := make(chan struct{}, 1)
 	sseCtx, cancel := context.WithCancel(c.Request.Context())
 	s.mu.Lock()
+	tok := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	exp, valid := s.tokens[tok]
+	if !valid || !time.Now().Before(exp) {
+		s.mu.Unlock()
+		cancel()
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
 	s.stateID++
 	id := s.stateID
 	s.stateConns[id] = stateConn{ch: ch, cancel: cancel, tok: strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")}
@@ -195,11 +208,16 @@ func (s *Server) stateStream(c *gin.Context) {
 		cancel()
 	}()
 
+	expiry := time.NewTimer(time.Until(exp))
+	defer expiry.Stop()
+
 	// 连接建立即推送一帧，前端据此完成首次（重连后）刷新
 	writeStateEvent(c.Writer)
 	flusher.Flush()
 	for {
 		select {
+		case <-expiry.C:
+			return
 		case <-sseCtx.Done():
 			return
 		case <-ch:
@@ -434,13 +452,24 @@ func (s *Server) auth() gin.HandlerFunc {
 // ============ 系统设置 ============
 
 func (s *Server) getSettings(c *gin.Context) {
+	cfg := s.cfg.Snapshot()
+
 	c.JSON(http.StatusOK, gin.H{
-		"strm":   s.cfg.STRM,
-		"server": s.cfg.Server,
+		"strm":   cfg.STRM,
+		"server": cfg.Server,
 	})
 }
 
 func (s *Server) putSettings(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
 	var req struct {
 		STRM config.STRMConfig `json:"strm"`
 	}
@@ -448,7 +477,13 @@ func (s *Server) putSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	s.cfg.STRM = req.STRM
+	for _, t := range cfg.Tasks {
+		if err := config.ValidateTask(req.STRM.SaveDir, t, cfg.Tasks, t.Name); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	cfg.STRM = req.STRM
 	if s.db != nil {
 		if err := db.SetSettingJSON(s.db, "strm", req.STRM); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -462,7 +497,9 @@ func (s *Server) putSettings(c *gin.Context) {
 // ============ 存储 ============
 
 func (s *Server) listStorages(c *gin.Context) {
-	storages := s.cfg.Storages
+	cfg := s.cfg.Snapshot()
+
+	storages := cfg.Storages
 	if storages == nil {
 		storages = []config.Storage{}
 	}
@@ -470,6 +507,15 @@ func (s *Server) listStorages(c *gin.Context) {
 }
 
 func (s *Server) addStorage(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
 	var st config.Storage
 	if err := c.ShouldBindJSON(&st); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
@@ -486,13 +532,13 @@ func (s *Server) addStorage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "目前仅支持 openlist 驱动"})
 		return
 	}
-	for i := range s.cfg.Storages {
-		if s.cfg.Storages[i].Name == st.Name {
+	for i := range cfg.Storages {
+		if cfg.Storages[i].Name == st.Name {
 			c.JSON(http.StatusConflict, gin.H{"error": "存储名已存在"})
 			return
 		}
 	}
-	s.cfg.Storages = append(s.cfg.Storages, st)
+	cfg.Storages = append(cfg.Storages, st)
 	if s.db != nil {
 		if err := s.db.SaveStorage(st); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -504,16 +550,28 @@ func (s *Server) addStorage(c *gin.Context) {
 }
 
 func (s *Server) updateStorage(c *gin.Context) {
-	name := c.Param("name")
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
+	name := c.Query("name")
+	if name == "" {
+		name = c.Param("name")
+	}
 	var st config.Storage
 	if err := c.ShouldBindJSON(&st); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
 	st.Name = name
-	for i := range s.cfg.Storages {
-		if s.cfg.Storages[i].Name == name {
-			s.cfg.Storages[i] = st
+	for i := range cfg.Storages {
+		if cfg.Storages[i].Name == name {
+			cfg.Storages[i] = st
 			if s.db != nil {
 				if err := s.db.SaveStorage(st); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -529,10 +587,22 @@ func (s *Server) updateStorage(c *gin.Context) {
 }
 
 func (s *Server) deleteStorage(c *gin.Context) {
-	name := c.Param("name")
-	for i := range s.cfg.Storages {
-		if s.cfg.Storages[i].Name == name {
-			s.cfg.Storages = append(s.cfg.Storages[:i], s.cfg.Storages[i+1:]...)
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
+	name := c.Query("name")
+	if name == "" {
+		name = c.Param("name")
+	}
+	for i := range cfg.Storages {
+		if cfg.Storages[i].Name == name {
+			cfg.Storages = append(cfg.Storages[:i], cfg.Storages[i+1:]...)
 			if s.db != nil {
 				if err := s.db.DeleteStorage(name); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -549,13 +619,18 @@ func (s *Server) deleteStorage(c *gin.Context) {
 
 // browseStorage 存储浏览
 func (s *Server) browseStorage(c *gin.Context) {
-	name := c.Param("name")
+	cfg := s.cfg.Snapshot()
+
+	name := c.Query("name")
+	if name == "" {
+		name = c.Param("name")
+	}
 	path := c.Query("path")
 	refresh := c.Query("refresh") == "1" || c.Query("refresh") == "true"
 	if path == "" {
 		path = "/"
 	}
-	st := findStorage(s.cfg, name)
+	st := findStorage(cfg, name)
 	if st == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "存储不存在"})
 		return
@@ -588,6 +663,8 @@ func (s *Server) browseStorage(c *gin.Context) {
 // ============ 任务 ============
 
 func (s *Server) listTasks(c *gin.Context) {
+	cfg := s.cfg.Snapshot()
+
 	type taskView struct {
 		config.Task
 		NextRun *time.Time `json:"next_run,omitempty"`
@@ -595,9 +672,9 @@ func (s *Server) listTasks(c *gin.Context) {
 	}
 	next := s.mgr.NextRuns()
 	status := s.mgr.Status()
-	out := make([]taskView, 0, len(s.cfg.Tasks))
-	for i := range s.cfg.Tasks {
-		t := s.cfg.Tasks[i]
+	out := make([]taskView, 0, len(cfg.Tasks))
+	for i := range cfg.Tasks {
+		t := cfg.Tasks[i]
 		v := taskView{Task: t}
 		if n, ok := next[t.Name]; ok {
 			v.NextRun = &n
@@ -611,6 +688,16 @@ func (s *Server) listTasks(c *gin.Context) {
 }
 
 func (s *Server) addTask(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+			s.mgr.Reload()
+		}
+	}()
+
 	var t config.Task
 	if err := c.ShouldBindJSON(&t); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
@@ -620,20 +707,23 @@ func (s *Server) addTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "任务名、存储、路径不能为空"})
 		return
 	}
-	for i := range s.cfg.Tasks {
-		if s.cfg.Tasks[i].Name == t.Name {
+	if err := config.ValidateTask(cfg.STRM.SaveDir, t, cfg.Tasks, ""); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == t.Name {
 			c.JSON(http.StatusConflict, gin.H{"error": "任务名已存在"})
 			return
 		}
 	}
-	s.cfg.Tasks = append(s.cfg.Tasks, t)
+	cfg.Tasks = append(cfg.Tasks, t)
 	if s.db != nil {
 		if err := s.db.SaveTask(t); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 	}
-	s.mgr.Reload()
 	s.audit("", "task_create", t.Name, t.Storage+t.StoragePath)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -643,23 +733,42 @@ func (s *Server) addTask(c *gin.Context) {
 func taskName(c *gin.Context) string { return c.Query("name") }
 
 func (s *Server) updateTask(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+			s.mgr.Reload()
+		}
+	}()
+
 	name := taskName(c)
 	var t config.Task
 	if err := c.ShouldBindJSON(&t); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
+	// Older clients PUT a renamed draft to the original task. Never silently
+	// overwrite that task: copying a renamed draft must use POST instead.
+	if t.Name != "" && t.Name != name {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "改名须确认后创建新任务，原任务保持不变"})
+		return
+	}
 	t.Name = name
-	for i := range s.cfg.Tasks {
-		if s.cfg.Tasks[i].Name == name {
-			s.cfg.Tasks[i] = t
+	if err := config.ValidateTask(cfg.STRM.SaveDir, t, cfg.Tasks, name); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == name {
+			cfg.Tasks[i] = t
 			if s.db != nil {
 				if err := s.db.SaveTask(t); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
 				}
 			}
-			s.mgr.Reload()
 			s.audit("", "task_update", name, t.Storage+t.StoragePath)
 			c.JSON(http.StatusOK, gin.H{"ok": true})
 			return
@@ -669,17 +778,26 @@ func (s *Server) updateTask(c *gin.Context) {
 }
 
 func (s *Server) deleteTask(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+			s.mgr.Reload()
+		}
+	}()
+
 	name := taskName(c)
-	for i := range s.cfg.Tasks {
-		if s.cfg.Tasks[i].Name == name {
-			s.cfg.Tasks = append(s.cfg.Tasks[:i], s.cfg.Tasks[i+1:]...)
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == name {
+			cfg.Tasks = append(cfg.Tasks[:i], cfg.Tasks[i+1:]...)
 			if s.db != nil {
 				if err := s.db.DeleteTask(name); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
 				}
 			}
-			s.mgr.Reload()
 			s.audit("", "task_delete", name, "")
 			c.JSON(http.StatusOK, gin.H{"ok": true})
 			return
@@ -744,6 +862,14 @@ func (s *Server) taskLogStream(c *gin.Context) {
 	// 注册活跃连接：修改密码/登出时立即断开，防止失效会话继续接收日志
 	sseCtx, cancel := context.WithCancel(c.Request.Context())
 	s.mu.Lock()
+	tok := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	exp, valid := s.tokens[tok]
+	if !valid || !time.Now().Before(exp) {
+		s.mu.Unlock()
+		cancel()
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
 	s.sseID++
 	id := s.sseID
 	s.sseConns[id] = sseConn{cancel: cancel, tok: strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")}
@@ -755,6 +881,9 @@ func (s *Server) taskLogStream(c *gin.Context) {
 		cancel()
 	}()
 
+	expiry := time.NewTimer(time.Until(exp))
+	defer expiry.Stop()
+
 	// 初始同步：订阅时刻之前的存量日志
 	for _, l := range logbuf.History(after, snapSeq) {
 		writeSSELine(c.Writer, l)
@@ -764,6 +893,8 @@ func (s *Server) taskLogStream(c *gin.Context) {
 	// 实时推送：订阅后的增量行（订阅注册先于历史写入，无丢失无乱序）
 	for {
 		select {
+		case <-expiry.C:
+			return
 		case <-sseCtx.Done():
 			return
 		case line, ok := <-ch:
@@ -827,6 +958,10 @@ func (s *Server) taskStatus(c *gin.Context) {
 
 // strmReplace 批量替换任务已生成的 STRM 内容
 func (s *Server) strmReplace(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+
 	name := taskName(c)
 	var req struct {
 		FindText    string `json:"find_text"`
@@ -838,9 +973,9 @@ func (s *Server) strmReplace(c *gin.Context) {
 		return
 	}
 	var taskCfg *config.Task
-	for i := range s.cfg.Tasks {
-		if s.cfg.Tasks[i].Name == name {
-			taskCfg = &s.cfg.Tasks[i]
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == name {
+			taskCfg = &cfg.Tasks[i]
 			break
 		}
 	}
@@ -848,7 +983,11 @@ func (s *Server) strmReplace(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
 	}
-	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
+	taskDir, err := config.TaskDir(cfg.STRM.SaveDir, name)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 	s.audit("", "strm_replace", name, req.FindText+" → "+req.ReplaceText)
 	var regexErr error
 	if req.RegexMode {
@@ -861,54 +1000,75 @@ func (s *Server) strmReplace(c *gin.Context) {
 		return
 	}
 	count := 0
-	_ = filepath.Walk(taskDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".strm") {
+	err = s.mgr.WithIdle(name, func() error {
+		return filepath.Walk(taskDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".strm") {
+				return nil
+			}
+			rel, err := filepath.Rel(taskDir, path)
+			if err != nil {
+				return err
+			}
+			if _, err := config.TaskDir(taskDir, filepath.ToSlash(rel)); err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			content := string(data)
+			if req.RegexMode {
+				content = regexp.MustCompile(req.FindText).ReplaceAllString(content, req.ReplaceText)
+			} else {
+				content = strings.ReplaceAll(content, req.FindText, req.ReplaceText)
+			}
+			if content != string(data) { // 只统计实际发生替换的文件
+				if err := generator.WriteSTRM(path, content); err != nil {
+					return err
+				}
+				count++
+			}
 			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		content := string(data)
-		if req.RegexMode {
-			content = regexp.MustCompile(req.FindText).ReplaceAllString(content, req.ReplaceText)
-		} else {
-			content = strings.ReplaceAll(content, req.FindText, req.ReplaceText)
-		}
-		if content != string(data) { // 只统计实际发生替换的文件
-			_ = os.WriteFile(path, []byte(content), 0o644)
-			count++
-		}
-		return nil
+		})
 	})
+	if err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "count": count})
 }
 
 // overwriteTask 全量覆写：清空任务目录后重新生成（仿原版任务工具）
 func (s *Server) overwriteTask(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+
 	name := taskName(c)
 	if !s.taskExists(name) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
 	}
-	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
-	if err := os.RemoveAll(taskDir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	taskDir, err := config.TaskDir(cfg.STRM.SaveDir, name)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// 清空目录时间缓存：全量覆写必须忽略"目录未变化"检查，强制重新扫描
-	if s.db != nil {
-		if err := s.db.DeleteDirCache(name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+	if err := s.mgr.RunPrepared(name, func() error {
+		if s.db != nil {
+			if err := s.db.DeleteDirCache(name); err != nil {
+				return err
+			}
 		}
-	}
-	if err := s.mgr.Run(name); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		if err := os.RemoveAll(taskDir); err != nil {
+			return err
+		}
+		return os.MkdirAll(taskDir, 0o755)
+	}); err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
 	s.audit("", "task_overwrite", name, "")
@@ -917,18 +1077,32 @@ func (s *Server) overwriteTask(c *gin.Context) {
 
 // clearTaskDir 一键清除：删除任务目录下所有文件（仿原版任务工具）
 func (s *Server) clearTaskDir(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+
 	name := taskName(c)
 	if !s.taskExists(name) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
 	}
-	taskDir := filepath.Join(s.cfg.STRM.SaveDir, name)
-	if err := os.RemoveAll(taskDir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	taskDir, err := config.TaskDir(cfg.STRM.SaveDir, name)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := s.mgr.WithIdle(name, func() error {
+		if s.db != nil {
+			if err := s.db.DeleteDirCache(name); err != nil {
+				return err
+			}
+		}
+		if err := os.RemoveAll(taskDir); err != nil {
+			return err
+		}
+		return os.MkdirAll(taskDir, 0o755)
+	}); err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
 	s.audit("", "task_clear", name, "")
@@ -937,8 +1111,10 @@ func (s *Server) clearTaskDir(c *gin.Context) {
 
 // taskExists 任务是否存在
 func (s *Server) taskExists(name string) bool {
-	for i := range s.cfg.Tasks {
-		if s.cfg.Tasks[i].Name == name {
+	cfg := s.cfg.Snapshot()
+
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == name {
 			return true
 		}
 	}
@@ -948,6 +1124,8 @@ func (s *Server) taskExists(name string) bool {
 // ============ 插件 ============
 
 func (s *Server) listPlugins(c *gin.Context) {
+	cfg := s.cfg.Snapshot()
+
 	type pluginView struct {
 		ID      string              `json:"id"`
 		Name    string              `json:"name"`
@@ -957,7 +1135,7 @@ func (s *Server) listPlugins(c *gin.Context) {
 	}
 	out := make([]pluginView, 0, len(plugins.List()))
 	for _, p := range plugins.List() {
-		cfg := s.cfg.Plugins[p.ID()]
+		cfg := cfg.Plugins[p.ID()]
 		out = append(out, pluginView{
 			ID:      p.ID(),
 			Name:    p.Name(),
@@ -970,22 +1148,31 @@ func (s *Server) listPlugins(c *gin.Context) {
 }
 
 func (s *Server) updatePlugin(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
 	id := c.Param("id")
 	if plugins.Get(id) == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "插件不存在"})
 		return
 	}
-	var cfg config.PluginConfig
-	if err := c.ShouldBindJSON(&cfg); err != nil {
+	var pluginCfg config.PluginConfig
+	if err := c.ShouldBindJSON(&pluginCfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	if s.cfg.Plugins == nil {
-		s.cfg.Plugins = map[string]config.PluginConfig{}
+	if cfg.Plugins == nil {
+		cfg.Plugins = map[string]config.PluginConfig{}
 	}
-	s.cfg.Plugins[id] = cfg
+	cfg.Plugins[id] = pluginCfg
 	if s.db != nil {
-		if err := db.SetSettingJSON(s.db, "plugins", s.cfg.Plugins); err != nil {
+		if err := db.SetSettingJSON(s.db, "plugins", cfg.Plugins); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -997,21 +1184,32 @@ func (s *Server) updatePlugin(c *gin.Context) {
 // ============ Webhook 信息 ============
 
 func (s *Server) webhookInfo(c *gin.Context) {
+	cfg := s.cfg.Snapshot()
+
 	scheme := "http"
 	if c.Request.TLS != nil {
 		scheme = "https"
 	}
 	host := c.Request.Host
 	c.JSON(http.StatusOK, gin.H{
-		"trigger":   scheme + "://" + host + "/webhook/" + s.cfg.Webhook.Token,
-		"emby":      scheme + "://" + host + "/webhook/emby/" + s.cfg.Webhook.Token,
-		"token":     s.cfg.Webhook.Token,
-		"emby_sync": s.cfg.Webhook.EmbyDeleteSync,
+		"trigger":   scheme + "://" + host + "/webhook/" + cfg.Webhook.Token,
+		"emby":      scheme + "://" + host + "/webhook/emby/" + cfg.Webhook.Token,
+		"token":     cfg.Webhook.Token,
+		"emby_sync": cfg.Webhook.EmbyDeleteSync,
 	})
 }
 
 // putWebhook 保存 webhook 配置（Emby 删除同步设置）
 func (s *Server) putWebhook(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
 	var req struct {
 		EmbyDeleteSync config.EmbyDeleteSync `json:"emby_delete_sync"`
 	}
@@ -1019,9 +1217,9 @@ func (s *Server) putWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	s.cfg.Webhook.EmbyDeleteSync = req.EmbyDeleteSync
+	cfg.Webhook.EmbyDeleteSync = req.EmbyDeleteSync
 	if s.db != nil {
-		if err := s.db.SaveWebhook(db.WebhookConfig{Token: s.cfg.Webhook.Token, EmbyDeleteSync: req.EmbyDeleteSync}); err != nil {
+		if err := s.db.SaveWebhook(db.WebhookConfig{Token: cfg.Webhook.Token, EmbyDeleteSync: req.EmbyDeleteSync}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -1032,6 +1230,15 @@ func (s *Server) putWebhook(c *gin.Context) {
 
 // regenerateWebhook 重新生成 webhook token（旧地址立即失效）
 func (s *Server) regenerateWebhook(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg := s.cfg.Snapshot()
+	defer func() {
+		if c.Writer.Status() < 400 {
+			s.cfg.Replace(cfg)
+		}
+	}()
+
 	if s.db == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "数据库未启用"})
 		return
@@ -1041,7 +1248,7 @@ func (s *Server) regenerateWebhook(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	s.cfg.Webhook.Token = tok
+	cfg.Webhook.Token = tok
 	s.audit("", "webhook_regenerate", "", "")
 	scheme := "http"
 	if c.Request.TLS != nil {

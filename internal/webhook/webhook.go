@@ -55,7 +55,7 @@ func (h *Handler) Register(r *gin.Engine) {
 
 // dispatch 统一入口：按请求体区分 Emby 通知与任务触发
 func (h *Handler) dispatch(c *gin.Context) {
-	if c.Param("token") != h.cfg.Webhook.Token {
+	if c.Param("token") != h.cfg.Snapshot().Webhook.Token {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无效的 token"})
 		return
 	}
@@ -136,7 +136,7 @@ type embyWebhook struct {
 
 // embyDelete Emby 删除通知 → 删除远端存储文件
 func (h *Handler) embyDelete(c *gin.Context, body []byte, wh embyWebhook) {
-	es := h.cfg.Webhook.EmbyDeleteSync
+	es := h.cfg.Snapshot().Webhook.EmbyDeleteSync
 	// 记录完整处理日志：收到的通知、动作、远端路径、结果
 	logWebhook := func(action, target, remote, result, detail string) {
 		h.logWebhook(db.WebhookLog{
@@ -182,13 +182,14 @@ func (h *Handler) embyDelete(c *gin.Context, body []byte, wh embyWebhook) {
 // removeRemote 将 Emby 中的 strm 路径映射为远端路径并删除；
 // 返回映射后的远端路径（即使删除失败也返回，便于日志记录）
 func (h *Handler) removeRemote(embyPath string) (string, error) {
-	es := h.cfg.Webhook.EmbyDeleteSync
+	cfg := h.cfg.Snapshot()
+	es := cfg.Webhook.EmbyDeleteSync
 
 	// 1. 校验前缀：strm 目录在 Emby 中的路径
-	if !strings.HasPrefix(embyPath, es.StrmInEmby) {
+	if !withinPath(embyPath, es.StrmInEmby) {
 		return "", fmt.Errorf("非法路径，不在 strm 目录内: %s", embyPath)
 	}
-	relative := strings.TrimPrefix(embyPath, es.StrmInEmby)
+	relative := strings.TrimPrefix(filepath.Clean(embyPath), filepath.Clean(es.StrmInEmby))
 	relative = strings.TrimPrefix(relative, "/")
 
 	// 2. .strm 文件去掉文件名，统一按文件夹处理
@@ -203,7 +204,7 @@ func (h *Handler) removeRemote(embyPath string) (string, error) {
 	// 4. 白名单校验，防误删
 	allowed := false
 	for _, p := range es.AllowedPrefix {
-		if strings.HasPrefix(remoteDir, p) {
+		if withinPath(remoteDir, p) {
 			allowed = true
 			break
 		}
@@ -214,9 +215,9 @@ func (h *Handler) removeRemote(embyPath string) (string, error) {
 
 	// 5. 调用存储驱动删除
 	var storageCfg *config.Storage
-	for i := range h.cfg.Storages {
-		if h.cfg.Storages[i].Name == es.Storage {
-			storageCfg = &h.cfg.Storages[i]
+	for i := range cfg.Storages {
+		if cfg.Storages[i].Name == es.Storage {
+			storageCfg = &cfg.Storages[i]
 			break
 		}
 	}
@@ -232,4 +233,19 @@ func (h *Handler) removeRemote(embyPath string) (string, error) {
 	}
 	log.Printf("Emby 删除同步: %s -> %s", embyPath, remoteDir)
 	return remoteDir, nil
+}
+
+// Compare cleaned absolute paths at component boundaries, never raw string prefixes.
+func withinPath(value, prefix string) bool {
+	if prefix == "" || !filepath.IsAbs(prefix) || !filepath.IsAbs(value) || strings.ContainsAny(value, "\\\x00") {
+		return false
+	}
+	for _, p := range strings.Split(value, "/") {
+		if p == ".." {
+			return false
+		}
+	}
+	p := filepath.Clean(prefix)
+	v := filepath.Clean(value)
+	return v == p || strings.HasPrefix(v, strings.TrimSuffix(p, "/")+"/")
 }

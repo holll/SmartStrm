@@ -376,7 +376,7 @@
           <input type="checkbox" class="form-check-input" id="t-dircheck" checked>
           <label class="form-check-label" for="t-dircheck">目录时间检查</label>
         </div>
-        <div class="form-text">开启后仅当远程目录修改时间 &gt; 本地目录时才扫描子目录；<b>如文件更新后仍跳过扫描，请尝试取消本选项</b></div>
+        <div class="form-text">仅在增量模式下，开启后按缓存的远程目录修改时间跳过未变化的子目录；同步模式始终完整扫描，<b>如文件更新后仍跳过扫描，请尝试取消本选项</b></div>
       </div>
       <div class="mb-3">
         <div class="form-check form-switch">

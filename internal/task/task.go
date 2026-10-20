@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,13 +123,13 @@ func (b *LogBuffer) Since(seq int64) []LogLine {
 		return nil
 	}
 	if seq > b.seq {
-		return b.lines
+		return append([]LogLine(nil), b.lines...)
 	}
 	start := 0
 	for start < len(b.lines) && b.lines[start].Seq <= seq {
 		start++
 	}
-	return b.lines[start:]
+	return append([]LogLine(nil), b.lines[start:]...)
 }
 
 // LastSeq 当前最大 seq
@@ -153,16 +155,18 @@ func (b *LogBuffer) Reset() {
 
 // Manager 任务管理器
 type Manager struct {
-	cfg     *config.Config
-	db      *db.DB
-	cron    *cron.Cron
-	entryID map[string]cron.EntryID // 任务名 → Cron 条目
-	mu      sync.Mutex
-	running map[string]bool               // 正在运行的任务
-	cancel  map[string]context.CancelFunc // 运行中任务的取消函数
-	results map[string]*Result            // 最近一次运行结果
-	logs    map[string]*LogBuffer         // 任务日志缓冲
-	onState func()                        // 状态变化回调（管理页轮询用）
+	cfg        *config.Config
+	db         *db.DB
+	cron       *cron.Cron
+	entryID    map[string]cron.EntryID // 任务名 → Cron 条目
+	scheduleMu sync.Mutex
+	mu         sync.Mutex
+	activeDirs map[string]string             // Snapshot output directory retained across configuration edits
+	running    map[string]bool               // 正在运行的任务
+	cancel     map[string]context.CancelFunc // 运行中任务的取消函数
+	results    map[string]*Result            // 最近一次运行结果
+	logs       map[string]*LogBuffer         // 任务日志缓冲
+	onState    func()                        // 状态变化回调（管理页轮询用）
 }
 
 // Result 任务运行状态
@@ -177,14 +181,15 @@ type Result struct {
 // New 创建任务管理器
 func New(cfg *config.Config, database *db.DB) *Manager {
 	return &Manager{
-		cfg:     cfg,
-		db:      database,
-		cron:    cron.New(cron.WithLocation(chinaTZ), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger))),
-		entryID: map[string]cron.EntryID{},
-		running: map[string]bool{},
-		cancel:  map[string]context.CancelFunc{},
-		results: map[string]*Result{},
-		logs:    map[string]*LogBuffer{},
+		cfg:        cfg,
+		db:         database,
+		cron:       cron.New(cron.WithLocation(chinaTZ), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger))),
+		entryID:    map[string]cron.EntryID{},
+		activeDirs: map[string]string{},
+		running:    map[string]bool{},
+		cancel:     map[string]context.CancelFunc{},
+		results:    map[string]*Result{},
+		logs:       map[string]*LogBuffer{},
 	}
 }
 
@@ -200,11 +205,14 @@ func (m *Manager) Start() {
 
 // scheduleAll 为所有任务注册 Cron（先清空已有注册）
 func (m *Manager) scheduleAll() {
+	m.scheduleMu.Lock()
+	defer m.scheduleMu.Unlock()
+	cfg := m.cfg.Snapshot()
 	for _, id := range m.entryID {
 		m.cron.Remove(id)
 	}
 	m.entryID = map[string]cron.EntryID{}
-	for _, t := range m.cfg.Tasks {
+	for _, t := range cfg.Tasks {
 		if t.Crontab == "" {
 			continue
 		}
@@ -228,11 +236,61 @@ func (m *Manager) Reload() {
 }
 
 // Run 立即运行任务（异步执行）
-func (m *Manager) Run(name string) error {
+func (m *Manager) Run(name string) error { return m.RunPrepared(name, nil) }
+
+// RunPrepared claims exclusive operation ownership before destructive preparation.
+func (m *Manager) RunPrepared(name string, prepare func() error) error {
 	m.mu.Lock()
 	if m.running[name] {
 		m.mu.Unlock()
 		return fmt.Errorf("任务 %s 正在运行中", name)
+	}
+	cfg := m.cfg.Snapshot()
+	var selected *config.Task
+	for i := range cfg.Tasks {
+		if cfg.Tasks[i].Name == name {
+			selected = &cfg.Tasks[i]
+			break
+		}
+	}
+	if selected == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("任务不存在")
+	}
+	if err := config.ValidateTask(cfg.STRM.SaveDir, *selected, cfg.Tasks, name); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	dir, err := config.TaskDir(cfg.STRM.SaveDir, name)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if err := m.checkActiveDir(dir); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	// Validate local prerequisites before any destructive preparation.
+	foundStorage := false
+	for _, storage := range cfg.Storages {
+		if storage.Name == selected.Storage {
+			foundStorage = true
+			if _, err := driver.New(storage.Driver, storage.URL, storage.Token); err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			break
+		}
+	}
+	if !foundStorage {
+		m.mu.Unlock()
+		return fmt.Errorf("存储 %s 不存在", selected.Storage)
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	logbuf := m.logs[name]
 	if logbuf == nil {
@@ -251,6 +309,7 @@ func (m *Manager) Run(name string) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	m.activeDirs[name] = dir
 	m.running[name] = true
 	m.cancel[name] = cancel
 	m.results[name] = &Result{Running: true, Start: time.Now()}
@@ -266,6 +325,7 @@ func (m *Manager) Run(name string) error {
 				m.mu.Lock()
 				cancel()
 				delete(m.cancel, name)
+				delete(m.activeDirs, name)
 				m.running[name] = false
 				if r := m.results[name]; r != nil {
 					r.Running = false
@@ -276,11 +336,12 @@ func (m *Manager) Run(name string) error {
 				m.notify()
 			}
 		}()
-		r := m.runTask(ctx, name, logbuf)
+		r := m.runTaskConfig(ctx, name, logbuf, cfg)
 		stopped := ctx.Err() != nil // 须在 cancel() 之前判定
 		m.mu.Lock()
 		cancel()
 		delete(m.cancel, name)
+		delete(m.activeDirs, name)
 		m.running[name] = false
 		m.results[name] = &Result{
 			Running: false,
@@ -360,8 +421,11 @@ func (m *Manager) Stop(name string) error {
 
 // runTask 执行任务（内部）
 func (m *Manager) runTask(ctx context.Context, name string, logbuf *LogBuffer) *Result {
+	return m.runTaskConfig(ctx, name, logbuf, m.cfg.Snapshot())
+}
+
+func (m *Manager) runTaskConfig(ctx context.Context, name string, logbuf *LogBuffer, cfg *config.Config) *Result {
 	res := &Result{}
-	cfg := m.cfg
 
 	// 值拷贝：运行期间不受 addTask/updateTask/deleteTask 修改共享配置的影响
 	var taskCfg config.Task
@@ -426,7 +490,7 @@ func (m *Manager) Log(name string) *LogBuffer {
 // RunAll 运行所有任务
 func (m *Manager) RunAll() []string {
 	var failed []string
-	for _, t := range m.cfg.Tasks {
+	for _, t := range m.cfg.Snapshot().Tasks {
 		if err := m.Run(t.Name); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", t.Name, err))
 		}
@@ -436,6 +500,8 @@ func (m *Manager) RunAll() []string {
 
 // NextRuns 返回各任务下次运行时间
 func (m *Manager) NextRuns() map[string]time.Time {
+	m.scheduleMu.Lock()
+	defer m.scheduleMu.Unlock()
 	out := map[string]time.Time{}
 	for name, id := range m.entryID {
 		e := m.cron.Entry(id)
@@ -450,7 +516,8 @@ func (m *Manager) Status() map[string]*Result {
 	defer m.mu.Unlock()
 	out := map[string]*Result{}
 	for name, r := range m.results {
-		out[name] = r
+		copy := *r
+		out[name] = &copy
 	}
 	return out
 }
@@ -463,10 +530,52 @@ func (m *Manager) IsRunning(name string) bool {
 }
 
 // SetOnState 设置状态变化回调
-func (m *Manager) SetOnState(f func()) { m.onState = f }
+func (m *Manager) SetOnState(f func()) { m.mu.Lock(); m.onState = f; m.mu.Unlock() }
 
 func (m *Manager) notify() {
-	if m.onState != nil {
-		m.onState()
+	m.mu.Lock()
+	f := m.onState
+	m.mu.Unlock()
+	if f != nil {
+		f()
 	}
+}
+
+// checkActiveDir is called with m.mu held; reservations survive task edits/deletion.
+func (m *Manager) checkActiveDir(dir string) error {
+	for name, active := range m.activeDirs {
+		for _, pair := range [][2]string{{dir, active}, {active, dir}} {
+			rel, err := filepath.Rel(pair[0], pair[1])
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+				return fmt.Errorf("目标目录与运行中任务 %s 重叠", name)
+			}
+		}
+	}
+	return nil
+}
+
+// WithIdle serializes filesystem tools with Run/RunPrepared and each other.
+func (m *Manager) WithIdle(name string, fn func() error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running[name] {
+		return fmt.Errorf("任务 %s 正在运行中", name)
+	}
+	cfg := m.cfg.Snapshot()
+	for _, t := range cfg.Tasks {
+		if t.Name == name {
+			if err := config.ValidateTask(cfg.STRM.SaveDir, t, cfg.Tasks, name); err != nil {
+				return err
+			}
+			dir, err := config.TaskDir(cfg.STRM.SaveDir, name)
+			if err != nil {
+				return err
+			}
+			if err := m.checkActiveDir(dir); err != nil {
+				return err
+			}
+			return fn()
+		}
+	}
+	return fmt.Errorf("任务不存在")
 }

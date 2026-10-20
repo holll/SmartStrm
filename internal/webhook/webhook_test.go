@@ -40,13 +40,13 @@ func TestDispatchMergedWebhook(t *testing.T) {
 		t.Fatalf("Emby 通知分派错误: code=%d body=%q", w.Code, w.Body.String())
 	}
 
-	// 2. 任务触发格式 → 走触发（触发为异步，返回 ok）
+	// 2. 任务触发格式 → 走触发；不存在的任务同步返回冲突。
 	body2 := `{"strmtask":"nonexist"}`
 	req2 := httptest.NewRequest(http.MethodPost, "/webhook/"+token, bytes.NewBufferString(body2))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	r.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusOK {
+	if w2.Code != http.StatusConflict {
 		t.Fatalf("任务触发分派错误: code=%d body=%q", w2.Code, w2.Body.String())
 	}
 

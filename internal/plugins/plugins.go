@@ -98,12 +98,17 @@ func Get(id string) Plugin {
 
 // MergeConfig 合并插件配置：任务级覆盖全局
 func MergeConfig(global, task map[string]config.PluginConfig) map[string]config.PluginConfig {
-	merged := map[string]config.PluginConfig{}
-	for k, v := range global {
-		merged[k] = v
+	merged := config.ClonePlugins(global)
+	if merged == nil {
+		merged = map[string]config.PluginConfig{}
 	}
 	for k, v := range task {
-		merged[k] = v
+		if merged[k] == nil {
+			merged[k] = config.PluginConfig{}
+		}
+		for key, value := range config.ClonePlugins(map[string]config.PluginConfig{k: v})[k] {
+			merged[k][key] = value
+		}
 	}
 	return merged
 }

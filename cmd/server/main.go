@@ -99,7 +99,7 @@ func main() {
 	// 静态资源 gzip 压缩（HTML/CSS/JS 文本压缩率 70-80%）；
 	// SSE 日志流/状态流为实时流式输出，排除压缩
 	r.Use(gzip.Gzip(gzip.DefaultCompression,
-		gzip.WithExcludedPathsRegexs([]string{`/api/tasks/[^/]+/log/stream`, `/api/events/stream`})))
+		gzip.WithExcludedPathsRegexs([]string{`/api/tasks/log/stream`, `/api/events/stream`})))
 
 	mgr := task.New(cfg, database)
 	mgr.Start()

@@ -42,13 +42,15 @@ function animateNum(el, to, dur = 700) {
 }
 
 async function api(path, method='GET', body) {
+  const requestToken = TOKEN;
   const opt = {method, headers: {'Content-Type':'application/json'}};
   if (TOKEN) opt.headers['Authorization'] = 'Bearer ' + TOKEN;
   if (body !== undefined) opt.body = JSON.stringify(body);
   const r = await fetch(path, opt);
   // 登录接口的 401 是"账号或密码错误"，不能覆盖为"未登录"并重定向回登录页
-  if (r.status === 401 && path !== '/api/login') { showLogin(); throw new Error('未登录'); }
+  if (r.status === 401 && path !== '/api/login') { if (TOKEN === requestToken) expireSession(); throw new Error('未登录'); }
   const d = await r.json().catch(() => ({}));
+  if (path !== '/api/login' && TOKEN !== requestToken) throw new Error('会话已切换');
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
@@ -79,7 +81,24 @@ async function doLogin() {
   } catch(e) { document.getElementById('loginErr').textContent = e.message; }
   btn.disabled = false; btn.textContent = '登录';
 }
-function doLogout() { localStorage.removeItem('ss_token'); TOKEN=''; closeStateStream(); api('/api/logout','POST').catch(()=>{}); showLogin(); }
+async function doLogout() {
+ const token = TOKEN;
+ try {
+   let revocation;
+   try {
+     revocation = fetch('/api/logout', {method:'POST', headers:{Authorization:'Bearer '+token}});
+   } finally {
+     expireSession(); // 先发起旧 token 撤销，随即关流清本地，不等待网络返回
+   }
+   const r = await revocation;
+   if (!r.ok && r.status !== 401) throw new Error('HTTP '+r.status);
+ } catch(e) { toast('已本地退出，但服务端会话撤销未确认：'+e.message,'warning'); }
+}
+function expireSession() {
+ localStorage.removeItem('ss_token'); TOKEN='';
+ ++TASK_REQUEST; ++SETTINGS_REQUEST; ++BROWSE_REQUEST; clearPathDirs(); SETTINGS_READY=false;
+ closeStateStream(); closeLogModal(); showLogin();
+}
 
 function showPage(name) {
   ['overview','tasks','storages','browse','plugins','audit','webhooklog','settings','about'].forEach(p => {
@@ -112,9 +131,12 @@ function showPage(name) {
 }
 
 // ============ 运行历史（数据库持久化） ============
+let HISTORY_REQUEST = 0;
 async function loadHistory() {
+  const request = ++HISTORY_REQUEST;
   try {
     const runs = (await api('/api/runs?limit=50')) || [];
+    if (request !== HISTORY_REQUEST) return;
     const rows = document.getElementById('historyRows');
     if (!runs.length) { rows.innerHTML = '<tr><td colspan="11" class="empty">暂无运行记录</td></tr>'; return; }
     rows.innerHTML = runs.map(r => `<tr>
@@ -149,6 +171,7 @@ function fmtDur(start, end) {
 
 // 查看某次运行的完整日志（数据库）
 async function viewRunLog(runId, task) {
+  const request = ++LOG_REQUEST;
   LOG_TASK = null; LOG_HISTORY = true; // 展示历史日志，不建立实时流
   closeLogStream();
   logReset();
@@ -159,22 +182,23 @@ async function viewRunLog(runId, task) {
   try {
     const lines = (await api('/api/runs/'+runId+'/log')) || [];
     // 请求在途时用户可能已切换查看对象（开实时流/关弹窗），此时丢弃结果
-    if (!LOG_HISTORY) return;
+    if (!LOG_HISTORY || request !== LOG_REQUEST) return;
     LOG_LINES = lines.slice(-LOG_MAX_LINES).map(formatLogLine);
     logFlush(box);
   } catch(e) {
-    if (LOG_HISTORY) box.textContent = '加载失败: ' + e.message;
+    if (LOG_HISTORY && request === LOG_REQUEST) box.textContent = '加载失败: ' + e.message;
   }
 }
 
 // 关闭日志弹窗时关闭 SSE 连接
-function closeLogModal() {
+function cleanupLogModal() {
+  ++LOG_REQUEST;
   LOG_TASK = null;
   LOG_HISTORY = null;
   logReset();
   closeLogStream();
-  closeDialog('taskLogModal');
 }
+function closeLogModal() { closeDialog('taskLogModal'); }
 
 // 日志渲染：内存行缓冲 + rAF 合并写入单文本节点（DOM 节点数恒为 1）。
 // 逐行到达的 SSE 行在下一帧合并渲染，日志爆发时自然节流，避免逐行创建元素卡顿
@@ -226,6 +250,7 @@ function formatLogLine(l) {
 }
 
 // ============ 存储浏览 ============
+let BROWSE_REQUEST = 0;
 let BROWSE = {storage:'', path:'/', pick:null}; // pick: 任务编辑回填模式
 
 function gotoBrowse(storage, path) {
@@ -263,7 +288,9 @@ function browseChangeStorage() {
 }
 
 async function loadBrowse(refresh) {
+  const request = ++BROWSE_REQUEST;
   if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
+  if (request !== BROWSE_REQUEST) return;
   const sel = document.getElementById('browseStorage');
   const needFill = !sel.options.length || (BROWSE.storage && sel.value !== BROWSE.storage);
   if (needFill) {
@@ -286,8 +313,10 @@ async function loadBrowse(refresh) {
   document.getElementById('browseTitle').textContent = '存储浏览 - ' + BROWSE.storage + (BROWSE.pick ? '（选择扫描路径）' : '');
   document.getElementById('browsePathInput').value = BROWSE.path;
   try {
-    const qs = '?path=' + encodeURIComponent(BROWSE.path) + (refresh ? '&refresh=1' : '');
-    const files = (await api('/api/storages/'+encodeURIComponent(BROWSE.storage)+'/list'+qs)) || [];
+    const storage = BROWSE.storage, path = BROWSE.path;
+    const qs = '&path=' + encodeURIComponent(path) + (refresh ? '&refresh=1' : '');
+    const files = (await api('/api/storage/list?name='+encodeURIComponent(storage)+qs)) || [];
+    if (request !== BROWSE_REQUEST || storage !== BROWSE.storage || path !== BROWSE.path) return;
     const rows = document.getElementById('browseRows');
     // 前端搜索过滤
     const filter = (document.getElementById('browseFilter').value || '').trim().toLowerCase();
@@ -309,6 +338,7 @@ async function loadBrowse(refresh) {
     document.getElementById('browseCount').textContent = files.length + ' 项' + (filter ? ' | 筛选 ' + shown.length + ' 项' : '');
     document.getElementById('browseFilterClear').style.display = filter ? '' : 'none';
   } catch(e) {
+    if (request !== BROWSE_REQUEST) return;
     document.getElementById('browseRows').innerHTML = `<tr><td colspan="3" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
@@ -369,6 +399,8 @@ function openDialog(id) {
   dlg.addEventListener('keydown', trapKey);
 }
 function closeDialog(id) {
+  if (id === 'taskLogModal') cleanupLogModal();
+  if (id === 'taskDialog') ++TASK_EDIT_REQUEST;
   const dlg = document.getElementById(id);
   if (!dlg) return;
   dlg.classList.remove('show');
@@ -460,8 +492,12 @@ async function loadOverview() {
 }
 
 // ============ 任务 ============
+let TASK_REQUEST = 0;
 async function loadTasks() {
-  TASKS = (await api('/api/tasks')) || [];
+  const request = ++TASK_REQUEST;
+  const tasks = (await api('/api/tasks')) || [];
+  if (request !== TASK_REQUEST || !TOKEN) return;
+  TASKS = tasks;
   const rows = document.getElementById('taskRows');
   if (!TASKS.length) {
     if (!STORAGES.length) {
@@ -491,9 +527,12 @@ async function loadTasks() {
   loadHistory();
 }
 
+let STATUS_REQUEST = 0;
 async function loadStatus() {
+  const request = ++STATUS_REQUEST;
   try {
     const st = (await api('/api/tasks/status')) || {};
+    if (request !== STATUS_REQUEST) return;
     const rows = document.getElementById('statusRows');
     const entries = Object.entries(st);
     if (!entries.length) { rows.innerHTML = '<tr><td colspan="9" class="empty">暂无运行记录</td></tr>'; return; }
@@ -513,8 +552,10 @@ async function loadStatus() {
 // ============ 任务日志（SSE 实时流） ============
 // EventSource 无法携带 Authorization header，故用 fetch + ReadableStream 手动解析 SSE
 let LOG_TASK = null, LOG_HISTORY = false, LOG_STREAM_CTRL = null;
+let LOG_REQUEST = 0, LOG_RETRY = null;
 
 function selectLog(name) {
+  ++LOG_REQUEST;
   LOG_TASK = name; LOG_HISTORY = false;
   document.getElementById('logModalTitle').textContent = '任务日志 - ' + name;
   // 运行中显示停止按钮（原版交互）
@@ -539,7 +580,7 @@ function startLogStream(name) {
   }).then(async resp => {
     if (!resp.ok) {
       // 401（token 过期/已改密）：切回登录页，不进入重连循环
-      if (resp.status === 401) { showLogin(); return; }
+      if (resp.status === 401) { if (LOG_STREAM_CTRL === ctrl && !ctrl.signal.aborted) expireSession(); return; }
       throw new Error('HTTP ' + resp.status);
     }
     const reader = resp.body.getReader();
@@ -547,7 +588,8 @@ function startLogStream(name) {
     let buf = '';
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error('SSE EOF');
+      if (ctrl.signal.aborted) { await reader.cancel(); return; }
       buf += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n\n')) !== -1) {
@@ -557,7 +599,7 @@ function startLogStream(name) {
         if (m && m[1] === 'line') {
           try {
             // abort 异步生效，已缓冲的行仍会到达：查看对象已切换时丢弃，防串写
-            if (LOG_TASK !== name) return;
+            if (LOG_TASK !== name || LOG_STREAM_CTRL !== ctrl || ctrl.signal.aborted) return;
             const l = JSON.parse(m[2]);
             logAppend(box, formatLogLine(l));
           } catch(err) { /* 忽略解析失败的行 */ }
@@ -566,13 +608,14 @@ function startLogStream(name) {
     }
   }).catch(e => {
     // 连接断开（任务结束/网络抖动）：弹窗仍打开且任务未切换时自动重连
-    if (e.name !== 'AbortError' && LOG_TASK === name &&
+    if (e.name !== 'AbortError' && LOG_STREAM_CTRL === ctrl && !ctrl.signal.aborted && LOG_TASK === name &&
         document.getElementById('taskLogModal').classList.contains('show')) {
-      setTimeout(() => { if (LOG_TASK === name) startLogStream(name); }, 2000);
+      LOG_RETRY = setTimeout(() => { if (LOG_STREAM_CTRL === ctrl && !ctrl.signal.aborted && LOG_TASK === name) startLogStream(name); }, 2000);
     }
   });
 }
 function closeLogStream() {
+  clearTimeout(LOG_RETRY); LOG_RETRY = null;
   if (LOG_STREAM_CTRL) {
     LOG_STREAM_CTRL.abort();
     LOG_STREAM_CTRL = null;
@@ -617,11 +660,22 @@ function updateTaskSavePath() {
   pathEl.textContent = base.replace(/[\\/]+$/, '') + sep + name;
 }
 
-function openTask(name) {
+let TASK_PLUGIN_DRAFT = {}, TASK_EDIT_REQUEST = 0;
+function parsePluginJSON(text) {
+ const value = JSON.parse(text || '{}');
+ if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('插件参数必须为 JSON 对象');
+ return value;
+}
+async function openTask(name) {
+  const request = ++TASK_EDIT_REQUEST, token = TOKEN;
   const st = document.getElementById('t-storage');
-  // 存储列表尚未加载时先加载（首次点击「添加任务」可能在 loadAll 完成之前）
+  // Wait before populating the form; never reopen/reset a newer editor after a late load.
   if (!STORAGES.length) {
-    loadStorages().then(() => { if (STORAGES.length) openTask(name); });
+    try {
+      const storages = (await api('/api/storages')) || [];
+      if (request !== TASK_EDIT_REQUEST || TOKEN !== token) return;
+      STORAGES = storages;
+    } catch(e) { if (request === TASK_EDIT_REQUEST && TOKEN === token) toast(e.message, 'danger'); return; }
   }
   st.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
   const t = name ? TASKS.find(x => x.name === name) : null;
@@ -635,14 +689,22 @@ function openTask(name) {
   document.getElementById('t-keepAsset').checked = t ? !!t.keep_local_asset : false;
   // 任务级插件配置（独立弹窗中）
   const pl = document.getElementById('t-plugins');
+  TASK_PLUGIN_DRAFT = JSON.parse(JSON.stringify((t && t.plugins) || {}));
   pl.innerHTML = PLUGINS.map(p => {
-    const tc = (t && t.plugins && t.plugins[p.id]) || {};
-    const chk = tc.enabled !== undefined ? tc.enabled : false;
-    return `<div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
-      <div class="form-check form-switch">
-        <input type="checkbox" class="form-check-input" id="tp-${p.id}" ${chk?'checked':''}>
-        <label class="form-check-label" for="tp-${p.id}" title="${esc(p.desc || '')}">${esc(p.name)}</label>
-      </div>
+    const tc = TASK_PLUGIN_DRAFT[p.id];
+    const mode = !tc ? 'inherit' : tc.enabled === true ? 'on' : tc.enabled === false ? 'off' : 'custom';
+    const options = {...(tc || {})}; delete options.enabled;
+    return `<div class="border rounded p-2 mb-2">
+      <label for="tp-${p.id}">${esc(p.name)}</label>
+      <select id="tp-${p.id}">
+        <option value="inherit" ${mode==='inherit'?'selected':''}>继承全局</option>
+        <option value="on" ${mode==='on'?'selected':''}>启用（参数覆盖全局）</option>
+        <option value="off" ${mode==='off'?'selected':''}>停用</option>
+        <option value="custom" ${mode==='custom'?'selected':''}>继承开关，覆盖参数</option>
+      </select>
+      <label for="tp-config-${p.id}">任务参数 JSON（仅填写覆盖字段，未填写的字段继承全局）</label>
+      <textarea id="tp-config-${p.id}" rows="5">${esc(JSON.stringify(options,null,2))}</textarea>
+      <div class="tip">全局参数：${esc(JSON.stringify(p.config || {}))}</div>
     </div>`;
   }).join('');
   // 保存路径提示（懒加载生成根目录，任务名变化时联动更新）
@@ -696,8 +758,10 @@ function taskPathUp() {
 }
 
 // 扫描路径 datalist 自动补全：列出当前路径下的子目录（仿原版）
-let pathDirsTimer = null;
+let pathDirsTimer = null, PATH_REQUEST = 0;
 function loadTaskPathDirs() {
+  const request = ++PATH_REQUEST;
+  clearTimeout(pathDirsTimer);
   const storage = document.getElementById('t-storage').value;
   const path = document.getElementById('t-path').value.trim();
   const dl = document.getElementById('storagePath');
@@ -705,7 +769,8 @@ function loadTaskPathDirs() {
   clearTimeout(pathDirsTimer);
   pathDirsTimer = setTimeout(async () => {
     try {
-      const files = (await api('/api/storages/'+encodeURIComponent(storage)+'/list?path='+encodeURIComponent(path))) || [];
+      const files = (await api('/api/storage/list?name='+encodeURIComponent(storage)+'&path='+encodeURIComponent(path))) || [];
+      if (request !== PATH_REQUEST || storage !== document.getElementById('t-storage').value || path !== document.getElementById('t-path').value.trim()) return;
       const dirs = files.filter(f => f.is_dir)
         .map(f => (path === '/' ? '' : path) + '/' + f.name)
         .slice(0, 50);
@@ -714,6 +779,7 @@ function loadTaskPathDirs() {
   }, 300);
 }
 function clearPathDirs() {
+  ++PATH_REQUEST; clearTimeout(pathDirsTimer);
   const dl = document.getElementById('storagePath');
   if (dl) dl.innerHTML = '';
 }
@@ -772,11 +838,17 @@ function closeTaskToolModal() {
 }
 
 async function saveTask() {
-  const plugins = {};
-  PLUGINS.forEach(p => {
-    const el = document.getElementById('tp-'+p.id);
-    if (el && el.checked) plugins[p.id] = {enabled:true};
-  });
+  const plugins = JSON.parse(JSON.stringify(TASK_PLUGIN_DRAFT));
+  try {
+    PLUGINS.forEach(p => {
+      const mode = document.getElementById('tp-'+p.id).value;
+      if (mode === 'inherit') { delete plugins[p.id]; return; }
+      const cfg = parsePluginJSON(document.getElementById('tp-config-'+p.id).value);
+      delete cfg.enabled;
+      if (mode !== 'custom') cfg.enabled = mode === 'on';
+      plugins[p.id] = cfg;
+    });
+  } catch(e) { toast(e.message,'danger'); return; }
   const body = {
     name: document.getElementById('t-name').value.trim(),
     storage: document.getElementById('t-storage').value,
@@ -787,10 +859,11 @@ async function saveTask() {
     keep_local_asset: document.getElementById('t-keepAsset').checked,
     plugins
   };
+  if (window._editTask && window._editTask !== body.name && !confirm('改名将复制为新任务，原任务及文件保留。继续？')) return;
   const btn = document.getElementById('saveTaskBtn');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
-    if (window._editTask) { await api('/api/tasks?name='+encodeURIComponent(window._editTask),'PUT',body); }
+    if (window._editTask && window._editTask === body.name) { await api('/api/tasks?name='+encodeURIComponent(window._editTask),'PUT',body); }
     else { await api('/api/tasks','POST',body); }
     closeDialog('taskDialog'); loadTasks();
   } catch(e){ toast(e.message, 'danger'); }
@@ -829,23 +902,23 @@ async function saveStorage() {
   const btn = document.getElementById('saveStorageBtn');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
-    if (window._editStorage) await api('/api/storages/'+encodeURIComponent(window._editStorage),'PUT',body);
+    if (window._editStorage) await api('/api/storages?name='+encodeURIComponent(window._editStorage),'PUT',body);
     else await api('/api/storages','POST',body);
     closeDialog('storageDialog'); loadStorages();
   } catch(e){ toast(e.message, 'danger'); }
   btn.disabled = false; btn.textContent = '保存';
 }
-async function delStorage(name) { if(!confirm('确认删除存储 '+name+'？')) return; try { await api('/api/storages/'+encodeURIComponent(name),'DELETE'); loadStorages(); } catch(e){toast(e.message, 'danger');} }
+async function delStorage(name) { if(!confirm('确认删除存储 '+name+'？')) return; try { await api('/api/storages?name='+encodeURIComponent(name),'DELETE'); loadStorages(); } catch(e){toast(e.message, 'danger');} }
 
 // ============ 插件 ============
 async function loadPlugins() {
   PLUGINS = (await api('/api/plugins')) || [];
   const list = document.getElementById('pluginList');
   const forms = {
-    content_replace: `查找文本<input type="text" id="p-content_replace-find"><div class="tip">生成时替换 STRM 内文本</div>替换文本<input type="text" id="p-content_replace-replace">`,
+    content_replace: `查找文本<input type="text" id="p-content_replace-find"><div class="tip">生成时替换 STRM 内文本</div>替换文本<input type="text" id="p-content_replace-replace"><label><input type="checkbox" id="p-content_replace-regex_mode">正则模式</label>`,
     custom_strm_name: `自定义文件名（变量 {name} {ext}，如 {name}.strm）<input type="text" id="p-custom_strm_name-name">`,
-    scan_filter: `媒体文件后缀（留空用全局）<input type="text" id="p-scan_filter-media_ext"><div class="tip">逗号分隔</div>复制文件后缀<input type="text" id="p-scan_filter-copy_ext">`,
-    skip_keyword: `关键词（逗号分隔，支持正则）<input type="text" id="p-skip_keyword-keywords">`,
+    scan_filter: `媒体文件后缀（留空用全局）<input type="text" id="p-scan_filter-media_ext"><div class="tip">逗号分隔</div>复制文件后缀<input type="text" id="p-scan_filter-copy_ext">最小媒体大小(MB)<input type="number" id="p-scan_filter-media_size_min">`,
+    skip_keyword: `关键词（逗号分隔，支持正则）<input type="text" id="p-skip_keyword-keywords"><label><input type="checkbox" id="p-skip_keyword-regex_mode">正则模式</label><label><input type="checkbox" id="p-skip_keyword-only_dir">仅目录</label><label><input type="checkbox" id="p-skip_keyword-filter_mode">仅保留匹配项</label>`,
     task_delay: `目录列出后延时(ms)<input type="number" id="p-task_delay-list"><div class="tip">降低风控</div>文件复制后延时(ms)<input type="number" id="p-task_delay-copy">`
   };
   list.innerHTML = PLUGINS.map(p => `
@@ -865,18 +938,19 @@ function editPlugin(id) {
   el.style.display = el.style.display === 'none' ? '' : 'none';
   const map = {['p-'+id+'-find']:cfg.find_text, ['p-'+id+'-replace']:cfg.replace_text, ['p-'+id+'-name']:cfg.custom_name,
     ['p-'+id+'-media_ext']:cfg.media_ext, ['p-'+id+'-copy_ext']:cfg.copy_ext, ['p-'+id+'-keywords']:cfg.keywords,
-    ['p-'+id+'-list']:cfg.list_delay, ['p-'+id+'-copy']:cfg.copy_delay};
+    ['p-'+id+'-media_size_min']:cfg.media_size_min, ['p-'+id+'-list']:cfg.list_delay, ['p-'+id+'-copy']:cfg.copy_delay};
+  ['regex_mode','only_dir','filter_mode'].forEach(k => {const e=document.getElementById('p-'+id+'-'+k); if(e) e.checked=!!cfg[k];});
   Object.entries(map).forEach(([k,v]) => { if (v!==undefined) { const e = document.getElementById(k); if (e) e.value = v; } });
 }
 async function savePlugin(id) {
   const enabled = confirm('启用该插件？\n确定=启用  取消=停用');
-  const cfg = {enabled};
+  const cfg = {...(PLUGINS.find(p => p.id === id)?.config || {}), enabled};
   const read = (sid) => { const e = document.getElementById('p-'+id+'-'+sid); return e ? e.value.trim() : ''; };
-  if (id==='content_replace') { cfg.find_text=read('find'); cfg.replace_text=read('replace'); }
+  if (id==='content_replace') { cfg.find_text=read('find'); cfg.replace_text=read('replace'); cfg.regex_mode=document.getElementById('p-'+id+'-regex_mode').checked; }
   if (id==='custom_strm_name') { cfg.custom_name=read('name') || '{name}.({ext}).strm'; }
-  if (id==='scan_filter') { cfg.media_ext=read('media_ext'); cfg.copy_ext=read('copy_ext'); }
-  if (id==='skip_keyword') { cfg.keywords=read('keywords'); }
-  if (id==='task_delay') { cfg.list_delay=parseInt(read('list')||'200'); cfg.copy_delay=parseInt(read('copy')||'200'); }
+  if (id==='scan_filter') { cfg.media_ext=read('media_ext'); cfg.copy_ext=read('copy_ext'); cfg.media_size_min=Number(read('media_size_min')); }
+  if (id==='skip_keyword') { cfg.keywords=read('keywords'); ['regex_mode','only_dir','filter_mode'].forEach(k => cfg[k]=document.getElementById('p-'+id+'-'+k).checked); }
+  if (id==='task_delay') { cfg.list_delay=Number(read('list')||'0'); cfg.copy_delay=Number(read('copy')||'0'); }
   const btn = document.getElementById('savePluginBtn-'+id);
   if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
   try { await api('/api/plugins/'+id,'PUT',cfg); loadPlugins(); } catch(e){toast(e.message, 'danger');}
@@ -943,16 +1017,21 @@ async function loadWebhookLogs() {
 }
 
 // ============ 设置 ============
+let SETTINGS_REQUEST = 0, SETTINGS_READY = false;
 async function loadSettings() {
+  const request = ++SETTINGS_REQUEST; SETTINGS_READY = false;
+  document.getElementById('saveWhBtn').disabled = true;
+  document.getElementById('saveSettingsBtn').disabled = true;
   try {
-    const s = await api('/api/settings');
+    const [s, wh, storages] = await Promise.all([api('/api/settings'), api('/api/webhook/info'), api('/api/storages')]);
+    if (request !== SETTINGS_REQUEST) return;
+    STORAGES = storages || [];
     document.getElementById('s-mediaExt').value = s.strm.media_ext.join(',');
     document.getElementById('s-mediaSize').value = s.strm.media_size;
     document.getElementById('s-copyExt').value = s.strm.copy_ext.join(',');
     document.getElementById('s-saveDir').value = s.strm.save_dir;
     document.getElementById('s-strmBase').value = s.strm.strm_base || '';
     document.getElementById('s-urlEncode').checked = s.strm.url_encode;
-    const wh = await api('/api/webhook/info');
     document.getElementById('webhookInfo').innerHTML =
       `<input type="text" class="form-control" value="${esc(wh.trigger)}" readonly title="任务触发与 Emby 删除同步共用地址">
        <button class="btn btn-outline-dark" type="button" title="重置" onclick="regenerateWebhook()"><i class="bi bi-arrow-repeat"></i></button>
@@ -965,11 +1044,15 @@ async function loadSettings() {
     document.getElementById('wh-allowed').value = (es.allowed_prefix || []).join(',');
     const sel = document.getElementById('wh-storage');
     sel.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+    if (es.storage && !STORAGES.some(s=>s.name===es.storage)) sel.innerHTML += `<option value="${esc(es.storage)}">${esc(es.storage)}（不可用）</option>`;
     sel.value = es.storage || '';
-  } catch(e){}
+    SETTINGS_READY = true; document.getElementById('saveWhBtn').disabled = false;
+    document.getElementById('saveSettingsBtn').disabled = false;
+  } catch(e){ if (request === SETTINGS_REQUEST) toast('设置加载失败：'+e.message,'danger'); }
 }
 
 async function saveWebhook() {
+  if (!SETTINGS_READY) { toast('请等待设置加载完成','warning'); return; }
   const btn = document.getElementById('saveWhBtn');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
@@ -984,7 +1067,7 @@ async function saveWebhook() {
     });
     toast('已保存');
   } catch(e){ toast(e.message, 'danger'); }
-  btn.disabled = false; btn.textContent = '保存 Webhook 配置';
+  btn.disabled = !SETTINGS_READY; btn.textContent = '保存 Webhook 配置';
 }
 
 async function regenerateWebhook() {
@@ -1028,10 +1111,12 @@ async function changePassword() {
     document.getElementById('cp-old').value = '';
     document.getElementById('cp-new').value = '';
     document.getElementById('cp-confirm').value = '';
+    expireSession();
   } catch(e) { msg.textContent = e.message; }
   btn.disabled = false; btn.textContent = '修改密码';
 }
 async function saveSettings() {
+  if (!SETTINGS_READY) { toast('请等待设置加载完成','warning'); return; }
   const btn = document.getElementById('saveSettingsBtn');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
@@ -1049,7 +1134,7 @@ async function saveSettings() {
     TASK_SAVE_DIR = document.getElementById('s-saveDir').value.trim();
     toast('已保存');
   } catch(e){ toast(e.message, 'danger'); }
-  btn.disabled = false; btn.textContent = '保存设置';
+  btn.disabled = !SETTINGS_READY; btn.textContent = '保存设置';
 }
 
 // ============ 关于 ============
@@ -1089,11 +1174,11 @@ function renderAbout(d) {
 
 // ============ 任务状态推送（SSE，替代 5 秒轮询） ============
 // EventSource 无法携带 Authorization header，故用 fetch + ReadableStream 手动解析 SSE（与日志流同法）
-let STATE_STREAM_CTRL = null;
+let STATE_STREAM_CTRL = null, STATE_RETRY = null;
 
 // 收到状态事件后刷新当前可见页面的任务状态
 function refreshState() {
-  if (document.getElementById('page-tasks').style.display !== 'none') loadStatus();
+  if (document.getElementById('page-tasks').style.display !== 'none') loadTasks();
   if (document.getElementById('page-overview').style.display !== 'none') loadOverview();
 }
 
@@ -1107,7 +1192,7 @@ function startStateStream() {
   }).then(async resp => {
     if (!resp.ok) {
       // 401（token 过期/已改密）：切回登录页，不进入重连循环
-      if (resp.status === 401) { showLogin(); return; }
+      if (resp.status === 401) { if (STATE_STREAM_CTRL === ctrl && !ctrl.signal.aborted) expireSession(); return; }
       throw new Error('HTTP ' + resp.status);
     }
     const reader = resp.body.getReader();
@@ -1115,24 +1200,26 @@ function startStateStream() {
     let buf = '';
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error('SSE EOF');
+      if (ctrl.signal.aborted) { await reader.cancel(); return; }
       buf += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n\n')) !== -1) {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
-        if (frame.startsWith('event: state')) refreshState();
+        if (STATE_STREAM_CTRL === ctrl && !ctrl.signal.aborted && frame.startsWith('event: state')) refreshState();
       }
     }
   }).catch(e => {
     // 连接断开（网络抖动/服务重启）：2 秒后重连，重连后服务端会立即推一帧补齐状态
-    if (e.name !== 'AbortError' && TOKEN) {
-      setTimeout(startStateStream, 2000);
+    if (e.name !== 'AbortError' && TOKEN && STATE_STREAM_CTRL === ctrl && !ctrl.signal.aborted) {
+      STATE_RETRY = setTimeout(() => { if (TOKEN && STATE_STREAM_CTRL === ctrl && !ctrl.signal.aborted) startStateStream(); }, 2000);
     }
   });
 }
 
 function closeStateStream() {
+  clearTimeout(STATE_RETRY); STATE_RETRY = null;
   if (STATE_STREAM_CTRL) {
     STATE_STREAM_CTRL.abort();
     STATE_STREAM_CTRL = null;
@@ -1172,7 +1259,9 @@ function toast(msg, type = 'success') {
 function jsAttr(s) { return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function loadAll() {
+  const token=TOKEN;
   await Promise.all([loadOverview(), loadTasks(), loadStorages(), loadPlugins()]);
+  if (!TOKEN || TOKEN!==token) return;
   startStateStream(); // 任务状态变化由 SSE 推送，不再轮询
 }
 
