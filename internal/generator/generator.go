@@ -3,6 +3,8 @@ package generator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,6 +87,11 @@ func (g *Generator) logf(level, format string, args ...any) {
 func (g *Generator) Run(ctx context.Context) *Result {
 	g.env = plugins.EnvForTask(ctx, g.cfg, g.task)
 	g.result = &Result{}
+	if err := config.ValidatePlugins(plugins.MergeConfig(g.cfg.Plugins, g.task.Plugins)); err != nil {
+		g.result.Errors = append(g.result.Errors, err.Error())
+		return g.result
+	}
+
 	// 汇总与结束日志统一在 defer 输出，确保所有返回路径（含创建目录失败提前返回）都有统计行
 	defer func() {
 		g.logf("INFO", "【生成文件完成】 生成 %d 个，复制 %d 个，跳过 %d 个，跳过目录 %d 个，读取目录失败 %d 个",
@@ -135,7 +142,7 @@ func (g *Generator) Run(ctx context.Context) *Result {
 	if complete {
 		g.saveDirCache()
 	} else if g.db != nil {
-		if err := g.db.DeleteDirCache(g.task.Name); err != nil {
+		if err := g.db.DeleteDirCache(g.cacheKey()); err != nil {
 			g.result.Errors = append(g.result.Errors, fmt.Sprintf("清除失败任务缓存失败: %v", err))
 		}
 	}
@@ -408,7 +415,7 @@ func (g *Generator) loadDirCache() {
 	if g.db == nil {
 		return
 	}
-	cache, err := g.db.LoadDirCache(g.task.Name)
+	cache, err := g.db.LoadDirCacheNamespace(g.task.Name, g.cacheKey())
 	if err != nil {
 		g.logf("WARN", "读取目录时间缓存失败: %v", err)
 		return
@@ -420,7 +427,7 @@ func (g *Generator) saveDirCache() {
 	if g.db == nil {
 		return
 	}
-	if err := g.db.SaveDirCache(g.task.Name, g.dirCache); err != nil {
+	if err := g.db.SaveDirCacheNamespace(g.task.Name, g.cacheKey(), g.dirCache); err != nil {
 		g.logf("WARN", "保存目录时间缓存失败: %v", err)
 	}
 }
@@ -577,4 +584,23 @@ func finishCopy(out io.Closer, copyErr error, tmp, dst string, rename func(strin
 		_ = os.Remove(tmp)
 	}
 	return copyErr
+}
+
+// A configuration-addressed namespace prevents in-flight old runs from overwriting
+// the cache of a new configuration. Legacy unversioned caches are never trusted.
+func (g *Generator) cacheKey() string {
+	var storage config.Storage
+	for _, st := range g.cfg.Storages {
+		if st.Name == g.task.Storage {
+			storage = st
+			break
+		}
+	}
+	data, _ := json.Marshal(struct {
+		STRM    config.STRMConfig
+		Task    *config.Task
+		Plugins map[string]config.PluginConfig
+		Storage config.Storage
+	}{g.cfg.STRM, g.task, g.cfg.Plugins, storage})
+	return fmt.Sprintf("%s\x00%x", g.task.Name, sha256.Sum256(data))
 }

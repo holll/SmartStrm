@@ -7,26 +7,28 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 function deferred() { let resolve, reject; const promise = new Promise((a,b)=>{resolve=a;reject=b;}); return {promise,resolve,reject}; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
-function harness() {
+function harness({mobile=false}={}) {
  const nodes=new Map(), timers=new Map(), frames=new Map(); let seq=0;
  function element(id) {
   if(nodes.has(id)) return nodes.get(id);
   const classes=new Set(), listeners={};
-  const el={id,value:'',checked:false,disabled:false,textContent:'',innerHTML:'',options:[],dataset:{},style:{},listeners,
+  const attrs={}, children=[];
+   const el={id,attrs,children,tagName:'INPUT',tabIndex:0,isConnected:true,hidden:false,visibility:'visible',inert:false,value:'',checked:false,disabled:false,textContent:'',innerHTML:'',options:[],dataset:{},style:{},listeners,
    classList:{add:c=>classes.add(c),remove:c=>classes.delete(c),contains:c=>classes.has(c),toggle(c,on){if(on===undefined)on=!classes.has(c);on?classes.add(c):classes.delete(c);return on;}},
-   addEventListener(k,fn){listeners[k]=fn;},removeEventListener(k){delete listeners[k];},focus(){},querySelector(){return null;},querySelectorAll(){return [];},setAttribute(){},removeAttribute(){},appendChild(){},remove(){}};
+   addEventListener(k,fn){listeners[k]=fn;},removeEventListener(k){delete listeners[k];},focus(){document.activeElement=this;},querySelector(){return null;},querySelectorAll(q){this.lastSelector=q;return children;},setAttribute(k,v){attrs[k]=String(v);},removeAttribute(k){delete attrs[k];},matches(q){return q===':disabled' && this.disabled;},closest(){return this.hidden||this.inert||this.attrs['aria-hidden']==='true'?this:null;},getClientRects(){return this.hidden?[]:[{}];},appendChild(){},remove(){}};
   nodes.set(id,el);return el;
  }
- const modal=element('taskLogModal');
- const document={getElementById:element,querySelector:()=>null,querySelectorAll:q=>q==='.dialog'?[modal]:[],addEventListener(){},createElement:()=>element('created'),activeElement:null};
- const context=vm.createContext({console,document,localStorage:{getItem:()=>'',setItem(){},removeItem(){}},location:{hash:''},history:{replaceState(){}},navigator:{},Intl,Date,AbortController,TextDecoder,performance:{now:()=>0},confirm:()=>true,
+ const dialogs=['taskLogModal','taskDialog','storageDialog','taskToolsModal','taskPluginModal'].map(element);const modal=dialogs[0];
+ const document={getElementById:element,querySelector:q=>q==='.main-content'?element('main'):null,querySelectorAll:q=>q==='.dialog'?dialogs:q.includes('#app input')?[...nodes.values()].filter(n=>['INPUT','TEXTAREA','SELECT'].includes(n.tagName)):[],addEventListener(){},createElement:()=>element('created'),activeElement:null};
+ const media={matches:mobile,addEventListener(k,fn){this.listener=fn;}};
+  const context=vm.createContext({console,document,getComputedStyle:el=>({visibility:el.visibility}),matchMedia:()=>media,localStorage:{getItem:()=>'',setItem(){},removeItem(){}},location:{hash:''},history:{replaceState(){}},navigator:{},Intl,Date,AbortController,TextDecoder,performance:{now:()=>0},confirm:()=>true,
   fetch:()=>Promise.reject(new Error('unexpected fetch')),
   setTimeout:(f,ms)=>{const id=++seq;timers.set(id,{f,ms});return id;},clearTimeout:id=>timers.delete(id),requestAnimationFrame:f=>{const id=++seq;frames.set(id,f);return id;},cancelAnimationFrame:id=>frames.delete(id)});
  context.window=context;
  vm.runInContext(source,context,{filename:'app.js'});
  const run=s=>vm.runInContext(s,context);
  run("TOKEN='test'; toast=()=>{};");
- return {context,run,element,timers,frames};
+ return {context,run,element,timers,frames,document,media};
 }
 function response(data,status=200) {return {ok:status<400,status,json:async()=>data};}
 
@@ -128,4 +130,65 @@ test('task editor waits for storage and does not reopen a closed or newer editor
 
 test('late API success from a revoked session is rejected',async()=>{
  const h=harness(),d=deferred();h.context.fetch=()=>d.promise;const pending=h.run("api('/api/settings')");h.run('expireSession()');d.resolve(response({strm:{}}));await assert.rejects(pending,/会话已切换/);
+});
+
+
+test('session expiry scrubs every modal, DOM secret, cache and cancels pending editor/network',async()=>{
+ const h=harness(),d=deferred();let signal;
+ h.context.fetch=(_p,opt)=>{signal=opt.signal;return d.promise;};
+ h.run("TASKS=[{secret:'x'}];STORAGES=[{token:'secret'}];PLUGINS=[{config:{secret:'x'}}];TASK_PLUGIN_DRAFT={a:{secret:'x'}};TASK_SAVE_DIR='/secret';BROWSE_FILES=[{name:'private'}];BROWSE_LIST_KEY='private';openDialog('storageDialog');openDialog('taskDialog');openDialog('taskToolsModal');openDialog('taskPluginModal');");
+ for(const id of ['st-token','st-url','cp-old','cp-new','loginPass'])h.element(id).value='secret';
+ h.element('tp-custom').tagName='TEXTAREA';h.element('tp-custom').value='secret';
+ h.element('webhookInfo').innerHTML='<input value="http://local/secret-token"><button onclick="copy(secret)">copy</button>';
+ const pending=h.run("api('/api/storages')");h.run('expireSession()');
+ assert.equal(h.element('webhookInfo').innerHTML,'');
+ assert.equal(signal.aborted,true);for(const id of ['storageDialog','taskDialog','taskLogModal','taskToolsModal','taskPluginModal'])assert.equal(h.element(id).classList.contains('show'),false);
+ for(const id of ['st-token','st-url','cp-old','cp-new','loginPass','tp-custom'])assert.equal(h.element(id).value,'');
+ assert.equal(h.run('TASKS.length+STORAGES.length+PLUGINS.length+BROWSE_FILES.length'),0);assert.equal(h.run('TASK_SAVE_DIR'),null);assert.equal(h.run('Object.keys(TASK_PLUGIN_DRAFT).length'),0);
+ d.resolve(response([{token:'late secret'}]));await assert.rejects(pending,/会话已切换/);
+});
+
+test('session expiry invalidates an in-flight task editor even with an old successful response',async()=>{
+ const h=harness(),d=deferred();h.context.api=()=>d.promise;
+ h.run("TASKS=[{name:'private',storage:'disk'}];TASK_SAVE_DIR='/tmp';loadTaskPathDirs=()=>{};");
+ const pending=h.run("openTask('private')");h.run('expireSession()');d.resolve([{name:'disk',token:'old'}]);await pending;
+ assert.equal(h.element('taskDialog').classList.contains('show'),false);assert.equal(h.element('t-name').value,'');
+});
+
+test('storage publications rebuild browse options preserving valid selections and dropping removed ones',async()=>{
+ const h=harness();let storages=[{name:'A'},{name:'B'}];h.context.api=async()=>storages;
+ h.run("BROWSE.storage='B';BROWSE.path='/child';");await h.run('loadStorages()');
+ assert.match(h.element('browseStorage').innerHTML,/>A</);assert.match(h.element('browseStorage').innerHTML,/>B</);assert.equal(h.element('browseStorage').value,'B');assert.equal(h.run('BROWSE.path'),'/child');
+ storages=[{name:'C'}];await h.run('loadStorages()');assert.equal(h.element('browseStorage').value,'C');assert.equal(h.run('BROWSE.path'),'/');assert.doesNotMatch(h.element('browseStorage').innerHTML,/>B</);
+ storages=[];await h.run('loadStorages()');assert.equal(h.element('browseStorage').value,'');assert.equal(h.element('browseStorage').innerHTML,'');
+});
+
+test('directory search filters cached current list without any remote requests',async()=>{
+ const h=harness();let calls=0;h.context.api=async()=>{calls++;return [{name:'Movie.mp4',size:1},{name:'Other.mp4',size:2}];};
+ h.run("STORAGES=[{name:'disk'}];BROWSE.storage='disk';");await h.run('loadBrowse()');assert.equal(calls,1);
+ h.element('browseFilter').value='movie';h.element('browseFilter').listeners.input();assert.match(h.element('browseRows').innerHTML,/Movie/);assert.doesNotMatch(h.element('browseRows').innerHTML,/Other/);
+ h.run('clearBrowseFilter()');assert.match(h.element('browseRows').innerHTML,/Other/);assert.equal(calls,1);
+});
+
+test('focus trap includes textarea and excludes hidden, disabled and negative tabindex controls',()=>{
+ const h=harness(),root=h.element('taskDialog'),button=h.element('button'),textarea=h.element('textarea'),hidden=h.element('hidden'),disabled=h.element('disabled'),negative=h.element('negative'),invisible=h.element('invisible');
+ textarea.tagName='TEXTAREA';hidden.hidden=true;disabled.disabled=true;negative.tabIndex=-1;invisible.visibility='hidden';root.children.push(hidden,disabled,negative,button,textarea,invisible);
+ h.run("openDialog('taskDialog')");assert.equal(h.document.activeElement,button);assert.match(root.lastSelector,/textarea/);
+ h.document.activeElement=textarea;let prevented=0;h.context.event={key:'Tab',currentTarget:root,preventDefault(){prevented++;}};h.run('trapKey(event)');assert.equal(h.document.activeElement,button);
+ h.context.event.shiftKey=true;h.run('trapKey(event)');assert.equal(h.document.activeElement,textarea);assert.equal(prevented,2);
+});
+
+test('SSE resynchronization events produce explicit visible truncation warnings',async()=>{
+ const h=harness();let delivered=false;
+ h.context.fetch=async()=>({ok:true,body:{getReader:()=>({read:async()=>{if(delivered)return {done:true};delivered=true;return {done:false,value:new TextEncoder().encode('event: resync\ndata: {"truncated":true}\n\n')};}})}});
+ h.run("selectLog('task')");await tick();
+ assert.match(h.run('LOG_LINES.join("\\n")'),/日志已发生截断或连接需要重新同步/);assert.equal(h.timers.size,1);h.run('closeLogModal()');
+});
+
+test('mobile drawer isolates background, traps focus, supports Escape and restores trigger focus',()=>{
+ const h=harness({mobile:true}),sidebar=h.element('sidebar'),toggle=h.element('sidebarToggle'),nav=h.element('nav'),main=h.element('main');sidebar.children.push(nav);h.document.activeElement=toggle;
+ assert.equal(sidebar.inert,true);assert.equal(toggle.attrs['aria-expanded'],'false');h.run('toggleSidebar()');
+ assert.equal(sidebar.inert,false);assert.equal(main.inert,true);assert.equal(toggle.attrs['aria-expanded'],'true');assert.equal(sidebar.attrs['aria-modal'],'true');assert.equal(h.document.activeElement,nav);
+ sidebar.listeners.keydown({key:'Escape',currentTarget:sidebar});assert.equal(main.inert,false);assert.equal(sidebar.inert,true);assert.equal(toggle.attrs['aria-expanded'],'false');assert.equal(h.document.activeElement,toggle);
+ h.run('toggleSidebar()');h.media.matches=false;h.media.listener();assert.equal(sidebar.inert,false);assert.equal(main.inert,false);assert.equal(sidebar.attrs['aria-hidden'],'false');
 });

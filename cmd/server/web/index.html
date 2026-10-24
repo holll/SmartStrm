@@ -14,7 +14,7 @@
 <body>
 
 <!-- 移动端侧边栏开关 -->
-<button class="top-nav-toggle" id="sidebarToggle" aria-label="打开菜单" onclick="toggleSidebar()"><i class="bi bi-list"></i></button>
+<button class="top-nav-toggle" id="sidebarToggle" aria-controls="sidebar" aria-expanded="false" aria-label="打开菜单" onclick="toggleSidebar()"><i class="bi bi-list"></i></button>
 
 <!-- LOGIN -->
 <div id="login" style="display:none">
@@ -47,7 +47,7 @@
 <div id="app" style="display:none">
 
   <!-- SIDEBAR -->
-  <header class="sidebar">
+  <header class="sidebar" id="sidebar" tabindex="-1" aria-label="主导航">
     <div class="sidebar-header">
       <div class="sidebar-brand"><span class="logo-icon-sm"><i class="bi bi-film"></i></span>SmartStrm-Go</div>
     </div>

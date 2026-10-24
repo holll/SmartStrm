@@ -67,7 +67,10 @@ func TestFailedOrCancelledScanNeverCleans(t *testing.T) {
 			cfg, task, database, dir := setup(t)
 			old := filepath.Join(dir, "old.strm")
 			put(t, old, "keep")
-			if err := database.SaveDirCache(task.Name, map[string]int64{"/child": 1}); err != nil {
+			if _, err := database.LoadDirCacheNamespace(task.Name, New(cfg, task, mockDriver{}, database).cacheKey()); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SaveDirCache(New(cfg, task, mockDriver{}, database).cacheKey(), map[string]int64{"/child": 1}); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +96,7 @@ func TestFailedOrCancelledScanNeverCleans(t *testing.T) {
 			if res.Removed != 0 {
 				t.Fatal("removed after failed scan")
 			}
-			cache, err := database.LoadDirCache(task.Name)
+			cache, err := database.LoadDirCache(New(cfg, task, mockDriver{}, database).cacheKey())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +111,10 @@ func TestSyncMtimeDoesNotDeleteSkippedSubtree(t *testing.T) {
 	cfg, task, database, dir := setup(t)
 	put(t, filepath.Join(dir, "child", "movie.(mp4).strm"), "old")
 	put(t, filepath.Join(dir, "stale.strm"), "stale")
-	if err := database.SaveDirCache(task.Name, map[string]int64{"/child": 20}); err != nil {
+	if _, err := database.LoadDirCacheNamespace(task.Name, New(cfg, task, mockDriver{}, database).cacheKey()); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveDirCache(New(cfg, task, mockDriver{}, database).cacheKey(), map[string]int64{"/child": 20}); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
@@ -148,7 +154,7 @@ func TestWriteFailureDoesNotCacheDirectory(t *testing.T) {
 	if len(res.Errors) == 0 {
 		t.Fatal("expected rename failure")
 	}
-	cache, _ := database.LoadDirCache(task.Name)
+	cache, _ := database.LoadDirCache(New(cfg, task, mockDriver{}, database).cacheKey())
 	if len(cache) != 0 {
 		t.Fatal(cache)
 	}

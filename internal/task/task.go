@@ -16,6 +16,7 @@ import (
 	"smartstrm/internal/db"
 	"smartstrm/internal/driver"
 	"smartstrm/internal/generator"
+	"smartstrm/internal/plugins"
 )
 
 // chinaTZ 中国时区（UTC+8，无夏令时）。cron 表达式按此时区解释：
@@ -36,13 +37,34 @@ const logBufferMax = 50000
 
 // LogBuffer 任务日志缓冲（环形，按任务隔离，支持 SSE 订阅者）
 type LogBuffer struct {
-	mu    sync.Mutex
-	lines []LogLine
-	max   int
-	seq   int64
+	mu            sync.Mutex
+	lines         []LogLine
+	max           int
+	seq           int64
+	archive       []LogLine
+	persist       func([]LogLine) error
+	persistFailed bool
+	retain        bool
+	frozen        bool
 
 	subs  map[int64]chan LogLine // SSE 订阅者：id → 增量行通道
 	subID int64
+}
+
+func persistRunLogs(database *db.DB, runID int64, lines []LogLine) error {
+	stored := make([]struct {
+		Time  time.Time
+		Level string
+		Msg   string
+	}, len(lines))
+	for i, l := range lines {
+		stored[i] = struct {
+			Time  time.Time
+			Level string
+			Msg   string
+		}{l.Time, l.Level, l.Msg}
+	}
+	return database.InsertLogs(runID, stored)
 }
 
 // NewLogBuffer 创建日志缓冲
@@ -57,17 +79,32 @@ func (b *LogBuffer) Logf(level, format string, args ...any) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.frozen {
+		return
+	}
 	b.seq++
 	line := LogLine{Seq: b.seq, Time: time.Now(), Level: level, Msg: fmt.Sprintf(format, args...)}
 	b.lines = append(b.lines, line)
+	if b.retain {
+		b.archive = append(b.archive, line)
+		if len(b.archive) >= 1000 && b.persist != nil && !b.persistFailed {
+			if err := b.persist(b.archive); err != nil {
+				b.persistFailed = true
+			} else {
+				b.archive = nil
+			}
+		}
+	}
 	if len(b.lines) > b.max {
 		b.lines = b.lines[len(b.lines)-b.max:]
 	}
-	for _, ch := range b.subs {
-		// 非阻塞推送：订阅者消费慢时丢弃新行（前端可重新连接拿全量）
+	for id, ch := range b.subs {
+		// Overflow closes the subscription: SSE sends an explicit resync notice instead of silently dropping lines.
 		select {
 		case ch <- line:
 		default:
+			close(ch)
+			delete(b.subs, id)
 		}
 	}
 }
@@ -84,6 +121,10 @@ func (b *LogBuffer) Subscribe() (<-chan LogLine, int64, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan LogLine, 1024)
+	if b.frozen {
+		close(ch)
+		return ch, b.seq, func() {}
+	}
 	b.subID++
 	id := b.subID
 	b.subs[id] = ch
@@ -257,6 +298,10 @@ func (m *Manager) RunPrepared(name string, prepare func() error) error {
 		m.mu.Unlock()
 		return fmt.Errorf("任务不存在")
 	}
+	if err := config.ValidatePlugins(plugins.MergeConfig(cfg.Plugins, selected.Plugins)); err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	if err := config.ValidateTask(cfg.STRM.SaveDir, *selected, cfg.Tasks, name); err != nil {
 		m.mu.Unlock()
 		return err
@@ -286,27 +331,36 @@ func (m *Manager) RunPrepared(name string, prepare func() error) error {
 		m.mu.Unlock()
 		return fmt.Errorf("存储 %s 不存在", selected.Storage)
 	}
+	var runID int64
+	if m.db != nil {
+		var err error
+		runID, err = m.db.CreateRun(name)
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("创建运行记录失败: %w", err)
+		}
+	}
 	if prepare != nil {
 		if err := prepare(); err != nil {
+			if m.db != nil && runID > 0 {
+				if finishErr := m.db.FinishRun(runID, "error", 0, 0, 0, 0, err.Error()); finishErr != nil {
+					err = fmt.Errorf("%w; 结束运行记录失败: %v", err, finishErr)
+				}
+			}
 			m.mu.Unlock()
 			return err
 		}
 	}
-	logbuf := m.logs[name]
-	if logbuf == nil {
-		logbuf = NewLogBuffer(logBufferMax)
-		m.logs[name] = logbuf
-	}
-	// 每次运行重置日志缓冲，实时日志只保留当前（或最近一次）运行的记录；
-	// 历史运行日志在数据库中查看（runs/task_logs）；任务信息块由 generator 输出
-	logbuf.Reset()
-	startSeq := logbuf.LastSeq() // 本次运行起始 seq，落库时只取增量，避免历史日志重复写入
-
-	// 数据库运行记录
-	var runID int64
+	logbuf := NewLogBuffer(logBufferMax)
+	logbuf.retain = true
 	if m.db != nil {
-		runID, _ = m.db.CreateRun(name)
+		logbuf.persist = func(lines []LogLine) error { return persistRunLogs(m.db, runID, lines) }
 	}
+	if old := m.logs[name]; old != nil {
+		logbuf.seq = old.LastSeq()
+		old.Freeze()
+	}
+	m.logs[name] = logbuf
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.activeDirs[name] = dir
@@ -317,79 +371,49 @@ func (m *Manager) RunPrepared(name string, prepare func() error) error {
 	m.notify()
 
 	go func() {
-		// panic 兜底：任何内部 panic 都必须清理运行状态，否则任务将永远显示"运行中"
+		r := &Result{}
 		defer func() {
 			if p := recover(); p != nil {
-				log.Printf("任务 %s panic: %v", name, p)
-				logbuf.Logf("ERROR", "任务 %s 内部错误: %v", name, p)
-				m.mu.Lock()
-				cancel()
-				delete(m.cancel, name)
-				delete(m.activeDirs, name)
-				m.running[name] = false
-				if r := m.results[name]; r != nil {
-					r.Running = false
-					r.End = time.Now()
-					r.Error = fmt.Sprintf("任务内部错误: %v", p)
-				}
-				m.mu.Unlock()
-				m.notify()
+				r.Error = fmt.Sprintf("任务内部错误: %v", p)
+				logbuf.Logf("ERROR", "%s", r.Error)
 			}
-		}()
-		r := m.runTaskConfig(ctx, name, logbuf, cfg)
-		stopped := ctx.Err() != nil // 须在 cancel() 之前判定
-		m.mu.Lock()
-		cancel()
-		delete(m.cancel, name)
-		delete(m.activeDirs, name)
-		m.running[name] = false
-		m.results[name] = &Result{
-			Running: false,
-			Start:   m.results[name].Start,
-			End:     time.Now(),
-			Result:  r.Result,
-			Error:   r.Error,
-		}
-		if r.Result != nil && len(r.Result.Errors) > 0 {
-			logbuf.Logf("ERROR", "任务 %s 运行完成，%d 个错误", name, len(r.Result.Errors))
-		} else {
+			stopped := ctx.Err() != nil
+			cancel()
 			logbuf.Logf("INFO", "任务 %s 运行完成", name)
-		}
-		m.mu.Unlock()
-
-		// 落库：运行结果 + 本次日志（锁外执行）
-		if m.db != nil && runID > 0 {
-			status := "success"
-			if r.Error != "" {
-				status = "error"
+			lines := logbuf.Freeze()
+			if m.db != nil && runID > 0 {
+				if err := persistRunLogs(m.db, runID, lines); err != nil {
+					r.Error += fmt.Sprintf("; 保存运行日志失败: %v", err)
+					log.Printf("%s", r.Error)
+				}
+				status := "success"
+				if r.Error != "" {
+					status = "error"
+				} else if stopped {
+					status = "stopped"
+				}
+				counts := r.Result
+				if counts == nil {
+					counts = &generator.Result{}
+				}
+				if err := m.db.FinishRun(runID, status, counts.Generated, counts.Copied, counts.Removed, counts.Skipped+counts.SkippedDirs, r.Error); err != nil {
+					r.Error += fmt.Sprintf("; 保存运行结果失败: %v", err)
+					log.Printf("%s", r.Error)
+				}
 			}
-			if stopped {
-				status = "stopped"
-			}
-			if r.Result != nil {
-				// DB skipped 列保持「总跳过数」口径（文件+目录），与历史记录可比
-				_ = m.db.FinishRun(runID, status, r.Result.Generated, r.Result.Copied, r.Result.Removed,
-					r.Result.Skipped+r.Result.SkippedDirs, r.Error)
-			} else {
-				_ = m.db.FinishRun(runID, status, 0, 0, 0, 0, r.Error)
-			}
-			lines := logbuf.Since(startSeq)
-			dbLines := make([]struct {
-				Time  time.Time
-				Level string
-				Msg   string
-			}, len(lines))
-			for i, l := range lines {
-				dbLines[i] = struct {
-					Time  time.Time
-					Level string
-					Msg   string
-				}{l.Time, l.Level, l.Msg}
-			}
-			_ = m.db.InsertLogs(runID, dbLines)
-		}
-		m.notify()
+			// Publish idle only AFTER logs are frozen and database finalization has completed.
+			m.mu.Lock()
+			start := m.results[name].Start
+			delete(m.cancel, name)
+			delete(m.activeDirs, name)
+			m.running[name] = false
+			m.results[name] = &Result{Start: start, End: time.Now(), Result: r.Result, Error: r.Error}
+			m.mu.Unlock()
+			m.notify()
+		}()
+		r = m.runTaskConfig(ctx, name, logbuf, cfg)
 	}()
+
 	return nil
 }
 
@@ -578,4 +602,19 @@ func (m *Manager) WithIdle(name string, fn func() error) error {
 		}
 	}
 	return fmt.Errorf("任务不存在")
+}
+
+// Freeze seals a run and returns all not-yet-persisted lines, independent of the live ring.
+func (b *LogBuffer) Freeze() []LogLine {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.frozen = true
+	for id, ch := range b.subs {
+		close(ch)
+		delete(b.subs, id)
+	}
+	lines := append([]LogLine(nil), b.archive...)
+	b.archive = nil
+	b.retain = false
+	return lines
 }

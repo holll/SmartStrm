@@ -153,6 +153,13 @@ func TestSlashStorageQueryRoutes(t *testing.T) {
 		t.Fatal("not updated")
 	}
 	w = request(r, "DELETE", "/api/storages?name="+url.QueryEscape("disk/one"), nil)
+	if w.Code != 409 || len(cfg.Snapshot().Storages) != 1 {
+		t.Fatal(w.Code, w.Body)
+	}
+	if w = request(r, "DELETE", "/api/tasks?name=task", nil); w.Code != 200 {
+		t.Fatal(w.Code, w.Body)
+	}
+	w = request(r, "DELETE", "/api/storages?name="+url.QueryEscape("disk/one"), nil)
 	if w.Code != 200 || len(cfg.Snapshot().Storages) != 0 {
 		t.Fatal(w.Code, w.Body)
 	}

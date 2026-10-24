@@ -41,9 +41,12 @@ type Server struct {
 	sseID    int64
 	sseConns map[int64]sseConn // 活跃 SSE 日志流连接（登出/改密时强制断开）
 
-	stateID    int64
-	stateConns map[int64]stateConn // 活跃状态流连接（任务状态变化时广播）
-	stateTimer *time.Timer         // 状态广播节流定时器
+	stateID       int64
+	stateConns    map[int64]stateConn // 活跃状态流连接（任务状态变化时广播）
+	loginWindow   time.Time
+	loginAttempts int
+	loginActive   int
+	stateTimer    *time.Timer // 状态广播节流定时器
 }
 
 // sseConn 一条活跃的 SSE 日志流连接
@@ -83,6 +86,16 @@ func (s *Server) audit(user, action, target, detail string) {
 
 // Register 注册路由
 func (s *Server) Register(r *gin.Engine) {
+	// Direct peer IP is authoritative unless explicit trusted proxies are configured.
+	_ = r.SetTrustedProxies(nil)
+	r.Use(func(c *gin.Context) {
+		if c.Request.ContentLength > 1<<20 {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "请求体过大"})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		c.Next()
+	})
 	r.POST("/api/login", s.login)
 	r.POST("/api/logout", s.auth(), s.logout)
 	r.POST("/api/password", s.auth(), s.changePassword)
@@ -353,6 +366,28 @@ func (s *Server) taskHistory(c *gin.Context) {
 // ============ 认证 ============
 
 func (s *Server) login(c *gin.Context) {
+	s.mu.Lock()
+	now := time.Now()
+	if now.Sub(s.loginWindow) >= time.Minute {
+		s.loginWindow = now
+		s.loginAttempts = 0
+	}
+	if s.loginAttempts >= 20 || s.loginActive >= 2 {
+		s.mu.Unlock()
+		c.Header("Retry-After", "60")
+		c.JSON(429, gin.H{"error": "登录尝试过多，请稍后重试"})
+		return
+	}
+	s.loginAttempts++
+	s.loginActive++
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.loginActive--; s.mu.Unlock() }()
+	if c.Request.ContentLength > 4096 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "登录请求体过大"})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -600,6 +635,16 @@ func (s *Server) deleteStorage(c *gin.Context) {
 	if name == "" {
 		name = c.Param("name")
 	}
+	for _, t := range cfg.Tasks {
+		if t.Storage == name {
+			c.JSON(409, gin.H{"error": "存储仍被任务引用: " + t.Name})
+			return
+		}
+	}
+	if cfg.Webhook.EmbyDeleteSync.Storage == name {
+		c.JSON(409, gin.H{"error": "存储仍被删除同步引用"})
+		return
+	}
 	for i := range cfg.Storages {
 		if cfg.Storages[i].Name == name {
 			cfg.Storages = append(cfg.Storages[:i], cfg.Storages[i+1:]...)
@@ -707,6 +752,10 @@ func (s *Server) addTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "任务名、存储、路径不能为空"})
 		return
 	}
+	if err := config.ValidatePlugins(plugins.MergeConfig(cfg.Plugins, t.Plugins)); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 	if err := config.ValidateTask(cfg.STRM.SaveDir, t, cfg.Tasks, ""); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -756,6 +805,10 @@ func (s *Server) updateTask(c *gin.Context) {
 		return
 	}
 	t.Name = name
+	if err := config.ValidatePlugins(plugins.MergeConfig(cfg.Plugins, t.Plugins)); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 	if err := config.ValidateTask(cfg.STRM.SaveDir, t, cfg.Tasks, name); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -884,8 +937,13 @@ func (s *Server) taskLogStream(c *gin.Context) {
 	expiry := time.NewTimer(time.Until(exp))
 	defer expiry.Stop()
 
+	// Explicit resynchronization notices cover ring truncation and stale cursors.
+	history := logbuf.History(after, snapSeq)
+	if after > snapSeq || (len(history) > 0 && history[0].Seq > after+1) {
+		_, _ = fmt.Fprint(c.Writer, "event: resync\ndata: {\"truncated\":true}\n\n")
+	}
 	// 初始同步：订阅时刻之前的存量日志
-	for _, l := range logbuf.History(after, snapSeq) {
+	for _, l := range history {
 		writeSSELine(c.Writer, l)
 	}
 	flusher.Flush()
@@ -899,6 +957,8 @@ func (s *Server) taskLogStream(c *gin.Context) {
 			return
 		case line, ok := <-ch:
 			if !ok {
+				_, _ = fmt.Fprint(c.Writer, "event: resync\ndata: {\"reconnect\":true}\n\n")
+				flusher.Flush()
 				return
 			}
 			writeSSELine(c.Writer, line)
@@ -1171,6 +1231,16 @@ func (s *Server) updatePlugin(c *gin.Context) {
 		cfg.Plugins = map[string]config.PluginConfig{}
 	}
 	cfg.Plugins[id] = pluginCfg
+	for _, t := range cfg.Tasks {
+		if err := config.ValidatePlugins(plugins.MergeConfig(cfg.Plugins, t.Plugins)); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := config.ValidatePlugins(cfg.Plugins); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 	if s.db != nil {
 		if err := db.SetSettingJSON(s.db, "plugins", cfg.Plugins); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

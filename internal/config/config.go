@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -182,6 +183,9 @@ func TaskDir(root, name string) (string, error) {
 	return dst, nil
 }
 func ValidateTask(root string, t Task, tasks []Task, replacing string) error {
+	if err := ValidatePlugins(t.Plugins); err != nil {
+		return err
+	}
 	if _, err := TaskDir(root, t.Name); err != nil {
 		return err
 	}
@@ -199,6 +203,32 @@ func ValidateTask(root string, t Task, tasks []Task, replacing string) error {
 		}
 		if t.Name == other.Name || strings.HasPrefix(t.Name, other.Name+"/") || strings.HasPrefix(other.Name, t.Name+"/") {
 			return fmt.Errorf("任务目录重叠: %s", other.Name)
+		}
+	}
+	return nil
+}
+
+// ValidatePlugins rejects malformed enabled regular expressions before any writes or cleanup.
+func ValidatePlugins(all map[string]PluginConfig) error {
+	for id, cfg := range all {
+		enabled, _ := cfg["enabled"].(bool)
+		regex, _ := cfg["regex_mode"].(bool)
+		if !enabled || !regex {
+			continue
+		}
+		key := ""
+		switch id {
+		case "skip_keyword":
+			key = "keywords"
+		case "content_replace":
+			key = "find_text"
+		}
+		if key == "" {
+			continue
+		}
+		pattern, _ := cfg[key].(string)
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("插件 %s 正则无效: %w", id, err)
 		}
 	}
 	return nil

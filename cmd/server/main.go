@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,11 @@ var (
 	BuildTime = ""
 )
 
+// ReadTimeout bounds slow request bodies; no WriteTimeout so long-lived SSE remains valid.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+}
+
 func init() {
 	version.Version = Version
 	version.Commit = Commit
@@ -52,6 +58,7 @@ func main() {
 
 	port := flag.Int("port", 8024, "监听端口，如 8024")
 	resetPwd := flag.Bool("reset-password", false, "重置 admin 密码：生成随机密码并打印，执行后退出")
+	trustedProxies := flag.String("trusted-proxies", "", "明确可信的代理 IP/CIDR，逗号分隔；默认不信任转发头")
 	flag.Parse()
 
 	// 数据库固定路径 data/data.db（自动创建目录）
@@ -106,6 +113,15 @@ func main() {
 
 	apiSrv := api.New(cfg, mgr, database)
 	apiSrv.Register(r)
+	if strings.TrimSpace(*trustedProxies) != "" {
+		proxies := strings.Split(*trustedProxies, ",")
+		for i := range proxies {
+			proxies[i] = strings.TrimSpace(proxies[i])
+		}
+		if err := r.SetTrustedProxies(proxies); err != nil {
+			log.Fatalf("可信代理配置错误: %v", err)
+		}
+	}
 
 	wh := webhook.New(cfg, mgr, database)
 	wh.Register(r)
@@ -118,7 +134,7 @@ func main() {
 	log.Printf("Webhook 触发地址: /webhook/%s", cfg.Webhook.Token)
 
 	// HTTP 服务在后台 goroutine 运行，主协程等待退出信号
-	srv := &http.Server{Addr: addr, Handler: r}
+	srv := newHTTPServer(addr, r)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("服务启动失败: %v", err)

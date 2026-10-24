@@ -2,6 +2,7 @@ package task
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,7 +25,7 @@ func TestStopThenRunningFlag(t *testing.T) {
 				var content []map[string]any
 				for i := 0; i < 200; i++ {
 					content = append(content, map[string]any{
-						"name": "f" + string(rune('A'+i%26)) + string(rune('a'+i%26)) + ".mp4",
+						"name": fmt.Sprintf("f%d.mp4", i),
 						"size": 1 << 20, "is_dir": false, "modified": "2026-08-11 10:00:00",
 					})
 				}

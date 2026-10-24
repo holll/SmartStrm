@@ -165,7 +165,7 @@ func (d *DB) CleanupStaleRuns() error {
 
 // DeleteDirCache 删除任务的目录时间缓存（全量覆写时强制重新扫描）
 func (d *DB) DeleteDirCache(task string) error {
-	_, err := d.conn.Exec(`DELETE FROM dir_cache WHERE task=?`, task)
+	_, err := d.conn.Exec(`DELETE FROM dir_cache WHERE task=? OR instr(task, ?)=1`, task, task+"\x00")
 	return err
 }
 

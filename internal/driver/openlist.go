@@ -117,7 +117,13 @@ func (o *OpenList) post(ctx context.Context, api string, payload any) (apiResp, 
 		return resp, err
 	}
 	defer r.Body.Close()
-	data, _ := io.ReadAll(r.Body)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return resp, err
+	}
+	if r.StatusCode != http.StatusOK {
+		return resp, fmt.Errorf("OpenList HTTP %d", r.StatusCode)
+	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return resp, fmt.Errorf("OpenList 响应解析失败: %s", string(data))
 	}
@@ -143,6 +149,8 @@ func (o *OpenList) ListRefresh(ctx context.Context, path string) ([]File, error)
 // list 列出目录内容（refresh=true 时要求上游强制刷新）
 func (o *OpenList) list(ctx context.Context, path string, refresh bool) ([]File, error) {
 	var files []File
+	seen := map[string]bool{}
+	var expectedTotal *int64
 	page := 1
 	for {
 		resp, err := o.post(ctx, "/api/fs/list", map[string]any{
@@ -158,6 +166,46 @@ func (o *OpenList) list(ctx context.Context, path string, refresh bool) ([]File,
 		if string(resp.Data) == "null" || len(resp.Data) == 0 {
 			return nil, ErrNotFound
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Data, &fields); err != nil {
+			return nil, err
+		}
+		content, hasContent := fields["content"]
+		if !hasContent {
+			return nil, fmt.Errorf("OpenList list 缺少 content")
+		}
+		var total *int64
+		if raw, ok := fields["total"]; ok {
+			if err := json.Unmarshal(raw, &total); err != nil || total == nil || *total < 0 {
+				return nil, fmt.Errorf("OpenList list total 无效")
+			}
+		}
+		if string(content) == "null" && (total == nil || *total != 0) {
+			return nil, fmt.Errorf("OpenList list 空 content 缺少有效 total")
+		}
+		if total != nil {
+			if expectedTotal != nil && *expectedTotal != *total {
+				return nil, fmt.Errorf("OpenList list total 在分页期间变化")
+			}
+			expectedTotal = total
+		} else if expectedTotal != nil {
+			return nil, fmt.Errorf("OpenList list 分页缺少 total")
+		}
+		var entries []map[string]json.RawMessage
+		if err := json.Unmarshal(content, &entries); err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			var name string
+			var isDir *bool
+			if err := json.Unmarshal(entry["name"], &name); err != nil || name == "" || seen[name] {
+				return nil, fmt.Errorf("OpenList list 名称缺失或分页重复")
+			}
+			if err := json.Unmarshal(entry["is_dir"], &isDir); err != nil || isDir == nil {
+				return nil, fmt.Errorf("OpenList list 缺少 is_dir")
+			}
+			seen[name] = true
+		}
 		var d listData
 		if err := json.Unmarshal(resp.Data, &d); err != nil {
 			return nil, err
@@ -167,11 +215,17 @@ func (o *OpenList) list(ctx context.Context, path string, refresh bool) ([]File,
 			f.Modified = parseOpenListTime(c.Modified)
 			files = append(files, f)
 		}
+		if total != nil && int64(len(files)) > *total {
+			return nil, fmt.Errorf("OpenList list 超出 total")
+		}
+		if total != nil && int64(len(files)) < *total && len(d.Content) == 0 {
+			return nil, fmt.Errorf("OpenList list 分页不完整")
+		}
 		// 服务端返回 total 时用它判断是否还有下一页，避免恰好整页时的多余空请求
-		if d.Total > 0 && int64(page)*listPerPage >= d.Total {
+		if total != nil && int64(len(files)) >= *total {
 			break
 		}
-		if len(d.Content) < listPerPage {
+		if total == nil && len(d.Content) < listPerPage {
 			break
 		}
 		page++

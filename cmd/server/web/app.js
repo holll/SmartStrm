@@ -1,6 +1,7 @@
 
 let TOKEN = localStorage.getItem('ss_token') || '';
 let TASKS = [], STORAGES = [], PLUGINS = [];
+let SESSION_CTRL = new AbortController(), SESSION_EPOCH = 0;
 
 const dtf = new Intl.DateTimeFormat('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 function fmtTime(iso) {
@@ -42,15 +43,15 @@ function animateNum(el, to, dur = 700) {
 }
 
 async function api(path, method='GET', body) {
-  const requestToken = TOKEN;
-  const opt = {method, headers: {'Content-Type':'application/json'}};
+  const requestToken = TOKEN, epoch = SESSION_EPOCH;
+  const opt = {method, headers: {'Content-Type':'application/json'}, signal: SESSION_CTRL.signal};
   if (TOKEN) opt.headers['Authorization'] = 'Bearer ' + TOKEN;
   if (body !== undefined) opt.body = JSON.stringify(body);
   const r = await fetch(path, opt);
   // 登录接口的 401 是"账号或密码错误"，不能覆盖为"未登录"并重定向回登录页
   if (r.status === 401 && path !== '/api/login') { if (TOKEN === requestToken) expireSession(); throw new Error('未登录'); }
   const d = await r.json().catch(() => ({}));
-  if (path !== '/api/login' && TOKEN !== requestToken) throw new Error('会话已切换');
+  if (path !== '/api/login' && (TOKEN !== requestToken || epoch !== SESSION_EPOCH)) throw new Error('会话已切换');
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
@@ -76,6 +77,7 @@ async function doLogin() {
   try {
     const d = await api('/api/login', 'POST', {username: 'admin', password: document.getElementById('loginPass').value});
     TOKEN = d.token; localStorage.setItem('ss_token', TOKEN);
+    document.getElementById('loginPass').value = '';
     document.getElementById('loginErr').textContent = '';
     showApp(); loadAll();
   } catch(e) { document.getElementById('loginErr').textContent = e.message; }
@@ -96,8 +98,17 @@ async function doLogout() {
 }
 function expireSession() {
  localStorage.removeItem('ss_token'); TOKEN='';
+ ++SESSION_EPOCH; SESSION_CTRL.abort(); SESSION_CTRL = new AbortController();
+ ++TASK_EDIT_REQUEST; ++HISTORY_REQUEST; ++STATUS_REQUEST;
+ document.querySelectorAll('.dialog').forEach(d => closeDialog(d.id));
+ closeSidebar();
+ TASKS=[]; STORAGES=[]; PLUGINS=[]; TASK_PLUGIN_DRAFT={}; TASK_SAVE_DIR=null;
+ BROWSE={storage:'',path:'/',pick:null}; BROWSE_FILES=[]; BROWSE_LIST_KEY='';
+ window._editTask=null; window._editStorage=null;
+ document.querySelectorAll('#app input, #app textarea, #app select, .dialog input, .dialog textarea, .dialog select, #loginPass').forEach(el => { el.value=''; el.checked=false; });
+ ['taskRows','storageRows','pluginList','t-plugins','browseRows','browseStorage','taskLog','historyRows','auditRows','webhookLogRows','webhookInfo','wh-trigger','wh-emby'].forEach(id => { const el=document.getElementById(id); if(el) { el.textContent=''; el.innerHTML=''; } });
  ++TASK_REQUEST; ++SETTINGS_REQUEST; ++BROWSE_REQUEST; clearPathDirs(); SETTINGS_READY=false;
- closeStateStream(); closeLogModal(); showLogin();
+ closeStateStream(); closeLogModal(); showLogin(); document.getElementById('loginPass').focus();
 }
 
 function showPage(name) {
@@ -183,6 +194,7 @@ async function viewRunLog(runId, task) {
     const lines = (await api('/api/runs/'+runId+'/log')) || [];
     // 请求在途时用户可能已切换查看对象（开实时流/关弹窗），此时丢弃结果
     if (!LOG_HISTORY || request !== LOG_REQUEST) return;
+    LOG_TRUNCATED = lines.length > LOG_MAX_LINES;
     LOG_LINES = lines.slice(-LOG_MAX_LINES).map(formatLogLine);
     logFlush(box);
   } catch(e) {
@@ -203,7 +215,7 @@ function closeLogModal() { closeDialog('taskLogModal'); }
 // 日志渲染：内存行缓冲 + rAF 合并写入单文本节点（DOM 节点数恒为 1）。
 // 逐行到达的 SSE 行在下一帧合并渲染，日志爆发时自然节流，避免逐行创建元素卡顿
 const LOG_MAX_LINES = 2000; // 缓冲截断上限，防内存与渲染持续膨胀
-let LOG_LINES = [];
+let LOG_LINES = [], LOG_TRUNCATED = false;
 let LOG_FLUSH_RAF = null;
 
 // 取消待渲染帧并清空缓冲（关闭弹窗/切换查看对象时调用，防止悬挂 rAF 写入旧内容）
@@ -212,18 +224,19 @@ function logReset() {
     cancelAnimationFrame(LOG_FLUSH_RAF);
     LOG_FLUSH_RAF = null;
   }
-  LOG_LINES = [];
+  LOG_LINES = []; LOG_TRUNCATED = false;
 }
 
 function logFlush(box) {
   LOG_FLUSH_RAF = null;
-  box.textContent = LOG_LINES.join('\n');
+  box.textContent = (LOG_TRUNCATED ? '【提示】仅显示最近 '+LOG_MAX_LINES+' 行；完整日志请查看运行历史。\n' : '') + LOG_LINES.join('\n');
   box.scrollTop = box.scrollHeight; // 始终跟随最新
 }
 
 function logAppend(box, line) {
   LOG_LINES.push(line);
   if (LOG_LINES.length > LOG_MAX_LINES) {
+    LOG_TRUNCATED = true;
     LOG_LINES.splice(0, LOG_LINES.length - LOG_MAX_LINES);
   }
   if (LOG_FLUSH_RAF) return; // 本帧已有待渲染内容，合并写入
@@ -251,6 +264,7 @@ function formatLogLine(l) {
 
 // ============ 存储浏览 ============
 let BROWSE_REQUEST = 0;
+let BROWSE_FILES = [], BROWSE_LIST_KEY = '';
 let BROWSE = {storage:'', path:'/', pick:null}; // pick: 任务编辑回填模式
 
 function gotoBrowse(storage, path) {
@@ -292,11 +306,7 @@ async function loadBrowse(refresh) {
   if (!STORAGES.length) STORAGES = (await api('/api/storages')) || [];
   if (request !== BROWSE_REQUEST) return;
   const sel = document.getElementById('browseStorage');
-  const needFill = !sel.options.length || (BROWSE.storage && sel.value !== BROWSE.storage);
-  if (needFill) {
-    sel.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
-    sel.value = BROWSE.storage || STORAGES[0]?.name || '';
-  }
+  syncBrowseStorages();
   // 路径输入框回车跳转、搜索框实时过滤（只绑定一次）
   const pathInput = document.getElementById('browsePathInput');
   if (pathInput && !pathInput._bound) {
@@ -306,7 +316,7 @@ async function loadBrowse(refresh) {
   const filterInput = document.getElementById('browseFilter');
   if (filterInput && !filterInput._bound) {
     filterInput._bound = true;
-    filterInput.addEventListener('input', () => { if (BROWSE.storage) loadBrowse(); });
+    filterInput.addEventListener('input', renderBrowseFiles);
   }
   if (!BROWSE.storage) BROWSE.storage = sel.value;
   if (!BROWSE.storage) { document.getElementById('browseRows').innerHTML = '<tr><td colspan="3" class="empty">暂无存储，请先在「存储管理」中添加</td></tr>'; return; }
@@ -317,26 +327,8 @@ async function loadBrowse(refresh) {
     const qs = '&path=' + encodeURIComponent(path) + (refresh ? '&refresh=1' : '');
     const files = (await api('/api/storage/list?name='+encodeURIComponent(storage)+qs)) || [];
     if (request !== BROWSE_REQUEST || storage !== BROWSE.storage || path !== BROWSE.path) return;
-    const rows = document.getElementById('browseRows');
-    // 前端搜索过滤
-    const filter = (document.getElementById('browseFilter').value || '').trim().toLowerCase();
-    const shown = filter ? files.filter(f => f.name.toLowerCase().includes(filter)) : files;
-    const crumbs = [];
-    if (BROWSE.path !== '/') {
-      crumbs.push(`<tr class="cursor-pointer" onclick="browseNav('..')"><td><i class="me-2 bi bi-folder-fill text-warning"></i>..</td><td></td><td></td></tr>`);
-    }
-    if (!shown.length && !crumbs.length) {
-      rows.innerHTML = '<tr><td colspan="3" class="empty">空目录</td></tr>';
-    } else {
-      rows.innerHTML = crumbs.concat(shown.map(f => `<tr>
-        <td class="cursor-pointer">${f.is_dir
-          ? '<div class="d-flex align-items-center"><div class="file-icon me-2"><i class="bi bi-folder-fill text-warning"></i></div><span class="text-break" onclick="browseNav(\''+jsAttr(f.name)+'\')">'+esc(f.name)+'</span></div>'
-          : '<div class="d-flex align-items-center"><div class="file-icon me-2"><i class="bi bi-file-earmark text-muted"></i></div><span class="text-break">'+esc(f.name)+'</span></div>'}</td>
-        <td class="num">${f.is_dir ? '-' : fmtSize(f.size)}</td>
-        <td class="num">${fmtBrowseTime(f.modified)}</td></tr>`).join('')).join('');
-    }
-    document.getElementById('browseCount').textContent = files.length + ' 项' + (filter ? ' | 筛选 ' + shown.length + ' 项' : '');
-    document.getElementById('browseFilterClear').style.display = filter ? '' : 'none';
+    BROWSE_FILES = files; BROWSE_LIST_KEY = storage + '\n' + path;
+    renderBrowseFiles();
   } catch(e) {
     if (request !== BROWSE_REQUEST) return;
     document.getElementById('browseRows').innerHTML = `<tr><td colspan="3" class="empty">${esc(e.message)}</td></tr>`;
@@ -346,7 +338,7 @@ async function loadBrowse(refresh) {
 // 浏览搜索过滤（原版前端过滤）
 function clearBrowseFilter() {
   document.getElementById('browseFilter').value = '';
-  loadBrowse();
+  renderBrowseFiles();
 }
 
 function browseNav(name) {
@@ -392,9 +384,10 @@ function fmtBrowseTime(iso) {
 function openDialog(id) {
   const dlg = document.getElementById(id);
   dlg.classList.add('show');
+  dlg.setAttribute('tabindex','-1');
   dlg._lastFocus = document.activeElement;
   // 焦点圈定在对话框内（跳过禁用与隐藏元素）
-  const first = dlg.querySelector('input:not([disabled]),select:not([disabled]),button:not([disabled])');
+  const first = focusableElements(dlg)[0];
   if (first) first.focus();
   dlg.addEventListener('keydown', trapKey);
 }
@@ -408,13 +401,13 @@ function closeDialog(id) {
   if (dlg._lastFocus) dlg._lastFocus.focus();
 }
 function trapKey(e) {
-  if (e.key === 'Escape') { closeDialog(e.currentTarget.id); return; }
+  if (e.key === 'Escape') { if(e.currentTarget.id==='sidebar') closeSidebar(); else closeDialog(e.currentTarget.id); return; }
   if (e.key !== 'Tab') return;
-  const focusables = e.currentTarget.querySelectorAll('button,input,select,[tabindex]:not([tabindex="-1"])');
-  if (!focusables.length) return;
+  const focusables = focusableElements(e.currentTarget);
+  if (!focusables.length) { e.preventDefault(); e.currentTarget.focus(); return; }
   const first = focusables[0], last = focusables[focusables.length-1];
-  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  if (e.shiftKey && (document.activeElement === first || !focusables.includes(document.activeElement))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (document.activeElement === last || !focusables.includes(document.activeElement))) { e.preventDefault(); first.focus(); }
 }
 // 点击遮罩关闭
 document.querySelectorAll('.dialog').forEach(d => d.addEventListener('click', e => { if (e.target === d) closeDialog(d.id); }));
@@ -596,6 +589,7 @@ function startLogStream(name) {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         const m = frame.match(/^event: (\w+)\ndata: (.+)$/m);
+        if (m && m[1] === 'resync') { logAppend(box, '【提示】日志已发生截断或连接需要重新同步；正在重连，完整日志请查看运行历史。'); }
         if (m && m[1] === 'line') {
           try {
             // abort 异步生效，已缓冲的行仍会到达：查看对象已切换时丢弃，防串写
@@ -674,7 +668,7 @@ async function openTask(name) {
     try {
       const storages = (await api('/api/storages')) || [];
       if (request !== TASK_EDIT_REQUEST || TOKEN !== token) return;
-      STORAGES = storages;
+      STORAGES = storages; syncBrowseStorages();
     } catch(e) { if (request === TASK_EDIT_REQUEST && TOKEN === token) toast(e.message, 'danger'); return; }
   }
   st.innerHTML = STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
@@ -873,6 +867,7 @@ async function saveTask() {
 // ============ 存储 ============
 async function loadStorages() {
   STORAGES = (await api('/api/storages')) || [];
+  syncBrowseStorages();
   const rows = document.getElementById('storageRows');
   if (!STORAGES.length) {
     rows.innerHTML = '<tr><td colspan="4" class="empty">暂无存储，点击右上角「添加存储」接入 OpenList/AList</td></tr>';
@@ -1025,7 +1020,7 @@ async function loadSettings() {
   try {
     const [s, wh, storages] = await Promise.all([api('/api/settings'), api('/api/webhook/info'), api('/api/storages')]);
     if (request !== SETTINGS_REQUEST) return;
-    STORAGES = storages || [];
+    STORAGES = storages || []; syncBrowseStorages();
     document.getElementById('s-mediaExt').value = s.strm.media_ext.join(',');
     document.getElementById('s-mediaSize').value = s.strm.media_size;
     document.getElementById('s-copyExt').value = s.strm.copy_ext.join(',');
@@ -1230,8 +1225,34 @@ function closeStateStream() {
 // esc: HTML 文本上下文转义
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 // 移动端侧边栏开关
-function toggleSidebar() { document.getElementById('app').classList.toggle('sidebar-open'); }
-function closeSidebar() { document.getElementById('app').classList.remove('sidebar-open'); }
+let SIDEBAR_LAST_FOCUS = null;
+function syncSidebar() {
+ const sidebar=document.getElementById('sidebar'), app=document.getElementById('app'), toggle=document.getElementById('sidebarToggle');
+ const mobile=window.matchMedia ? window.matchMedia('(max-width: 768px)').matches : false;
+ const open=mobile && app.classList.contains('sidebar-open');
+ if (!mobile) app.classList.remove('sidebar-open');
+ sidebar.inert=mobile && !open;
+ sidebar.setAttribute('aria-hidden', String(mobile && !open));
+ toggle.setAttribute('aria-expanded', String(open));
+ toggle.setAttribute('aria-label', open ? '关闭菜单' : '打开菜单');
+ const main=document.querySelector('.main-content'); if(main) main.inert=open;
+ if(open) { sidebar.setAttribute('role','dialog'); sidebar.setAttribute('aria-modal','true'); sidebar.addEventListener('keydown',trapKey); }
+ else { sidebar.removeAttribute('role'); sidebar.removeAttribute('aria-modal'); sidebar.removeEventListener('keydown',trapKey); }
+}
+function toggleSidebar() {
+ const app=document.getElementById('app');
+ if(app.classList.contains('sidebar-open')) { closeSidebar(); return; }
+ SIDEBAR_LAST_FOCUS=document.activeElement;
+ app.classList.add('sidebar-open'); syncSidebar();
+ focusableElements(document.getElementById('sidebar'))[0]?.focus();
+}
+function closeSidebar() {
+ const wasOpen=document.getElementById('app').classList.contains('sidebar-open');
+ document.getElementById('app').classList.remove('sidebar-open'); syncSidebar();
+ if(wasOpen && SIDEBAR_LAST_FOCUS?.isConnected) SIDEBAR_LAST_FOCUS.focus();
+ SIDEBAR_LAST_FOCUS=null;
+}
+window.matchMedia?.('(max-width: 768px)').addEventListener('change', () => { closeSidebar(); syncSidebar(); });
 // toast: 顶部居中轻提示（仿原版：header 图标 + 标题 + body），type: success/danger/warning/info
 const TOAST_META = {
   success: { icon: 'bi-check-circle-fill', title: '成功' },
@@ -1272,12 +1293,51 @@ async function loadAll() {
   if (TOKEN) {
     api('/api/settings').then(() => { showApp(); showPage(target); loadAll(); }).catch(() => showLogin());
   } else { showLogin(); }
+  syncSidebar();
   // 移动端：点击遮罩/内容区关闭侧边栏
   document.addEventListener('click', e => {
     const app = document.getElementById('app');
     if (app.classList.contains('sidebar-open') &&
         !e.target.closest('header.sidebar') && !e.target.closest('#sidebarToggle')) {
-      app.classList.remove('sidebar-open');
+      closeSidebar();
     }
   });
 })();
+
+// Synchronize options on every list publication, preserving only valid selections.
+function syncBrowseStorages() {
+ const sel=document.getElementById('browseStorage');
+ const valid=STORAGES.some(s => s.name === BROWSE.storage);
+ if (!valid) { BROWSE.storage=STORAGES[0]?.name || ''; BROWSE.path='/'; BROWSE_FILES=[]; BROWSE_LIST_KEY=''; }
+ sel.innerHTML=STORAGES.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+ sel.value=BROWSE.storage;
+}
+function renderBrowseFiles() {
+ const files=BROWSE_LIST_KEY === BROWSE.storage + '\n' + BROWSE.path ? BROWSE_FILES : [];
+    const rows = document.getElementById('browseRows');
+    // 前端搜索过滤
+    const filter = (document.getElementById('browseFilter').value || '').trim().toLowerCase();
+    const shown = filter ? files.filter(f => f.name.toLowerCase().includes(filter)) : files;
+    const crumbs = [];
+    if (BROWSE.path !== '/') {
+      crumbs.push(`<tr class="cursor-pointer" onclick="browseNav('..')"><td><i class="me-2 bi bi-folder-fill text-warning"></i>..</td><td></td><td></td></tr>`);
+    }
+    if (!shown.length && !crumbs.length) {
+      rows.innerHTML = '<tr><td colspan="3" class="empty">空目录</td></tr>';
+    } else {
+      rows.innerHTML = crumbs.concat(shown.map(f => `<tr>
+        <td class="cursor-pointer">${f.is_dir
+          ? '<div class="d-flex align-items-center"><div class="file-icon me-2"><i class="bi bi-folder-fill text-warning"></i></div><span class="text-break" onclick="browseNav(\''+jsAttr(f.name)+'\')">'+esc(f.name)+'</span></div>'
+          : '<div class="d-flex align-items-center"><div class="file-icon me-2"><i class="bi bi-file-earmark text-muted"></i></div><span class="text-break">'+esc(f.name)+'</span></div>'}</td>
+        <td class="num">${f.is_dir ? '-' : fmtSize(f.size)}</td>
+        <td class="num">${fmtBrowseTime(f.modified)}</td></tr>`).join('')).join('');
+    }
+    document.getElementById('browseCount').textContent = files.length + ' 项' + (filter ? ' | 筛选 ' + shown.length + ' 项' : '');
+    document.getElementById('browseFilterClear').style.display = filter ? '' : 'none';
+
+}
+
+function focusableElements(root) {
+ return Array.from(root.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')).filter(el =>
+  !el.disabled && !el.matches(':disabled') && el.tabIndex >= 0 && !el.closest('[hidden],[inert],[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+}
