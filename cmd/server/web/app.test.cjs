@@ -7,6 +7,28 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 function deferred() { let resolve, reject; const promise = new Promise((a,b)=>{resolve=a;reject=b;}); return {promise,resolve,reject}; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('STRM rebuild confirmation preserves scraping files and uses compatible POST endpoint',async()=>{
+ const h=harness(),calls=[],messages=[];
+ h.run("window._editTask='task / 中文';closeTaskToolModal=()=>{};");
+ h.context.fetch=async(p,opt)=>{calls.push({p,opt});return response({ok:true});};
+ h.context.confirm=message=>{messages.push(message);return false;};
+ await h.run('taskOverwriteAction()');assert.equal(calls.length,0);
+ assert.match(messages[0],/强制重建 STRM/);assert.match(messages[0],/保留本地 nfo、图片、字幕等刮削文件及子目录/);
+ assert.match(messages[0],/不覆盖远端同名非 STRM/);assert.match(messages[0],/不清理孤立本地文件/);assert.match(messages[0],/同步模式/);assert.doesNotMatch(messages[0],/清空/);
+ h.context.confirm=()=>true;await h.run('taskOverwriteAction()');
+ assert.equal(calls.length,1);assert.equal(calls[0].p,'/api/tasks/overwrite?name='+encodeURIComponent('task / 中文'));assert.equal(calls[0].opt.method,'POST');
+ const html=fs.readFileSync(path.join(__dirname,'index.html'),'utf8');
+ assert.match(html,/taskOverwriteAction\(\)">强制重建 STRM/);assert.match(html,/保留本地 nfo、图片、字幕/);assert.doesNotMatch(html,/全量覆写|强制覆写任务下的所有文件/);
+});
+
+test('clear remains a separately confirmed irreversible whole-directory deletion',async()=>{
+ const h=harness();let message,calls=0;
+ h.run("window._editTask='task';closeTaskToolModal=()=>{};");
+ h.context.confirm=text=>{message=text;return false;};h.context.fetch=async(p,opt)=>{calls++;assert.equal(p,'/api/tasks/clear?name=task');assert.equal(opt.method,'POST');return response({ok:true});};
+ await h.run('taskClearAction()');assert.equal(calls,0);assert.match(message,/整个输出目录/);assert.match(message,/刮削文件和子目录/);assert.match(message,/不可恢复/);
+ h.context.confirm=()=>true;await h.run('taskClearAction()');assert.equal(calls,1);
+});
 function harness({mobile=false}={}) {
  const nodes=new Map(), timers=new Map(), frames=new Map(); let seq=0;
  function element(id) {

@@ -1101,7 +1101,7 @@ func (s *Server) strmReplace(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "count": count})
 }
 
-// overwriteTask 全量覆写：清空任务目录后重新生成（仿原版任务工具）
+// overwriteTask 强制重建 STRM：保留刮削文件，不清理任何本地文件。
 func (s *Server) overwriteTask(c *gin.Context) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
@@ -1112,22 +1112,11 @@ func (s *Server) overwriteTask(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
 	}
-	taskDir, err := config.TaskDir(cfg.STRM.SaveDir, name)
-	if err != nil {
+	if _, err := config.TaskDir(cfg.STRM.SaveDir, name); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.mgr.RunPrepared(name, func() error {
-		if s.db != nil {
-			if err := s.db.DeleteDirCache(name); err != nil {
-				return err
-			}
-		}
-		if err := os.RemoveAll(taskDir); err != nil {
-			return err
-		}
-		return os.MkdirAll(taskDir, 0o755)
-	}); err != nil {
+	if err := s.mgr.RebuildSTRM(name); err != nil {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}

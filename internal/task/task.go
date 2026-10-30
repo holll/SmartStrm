@@ -281,6 +281,16 @@ func (m *Manager) Run(name string) error { return m.RunPrepared(name, nil) }
 
 // RunPrepared claims exclusive operation ownership before destructive preparation.
 func (m *Manager) RunPrepared(name string, prepare func() error) error {
+	return m.runPrepared(name, prepare, generator.RunOptions{})
+}
+
+// RebuildSTRM reserves the same exclusive run slot and validates the same snapshot
+// as Run, but performs only a non-destructive STRM rebuild for this invocation.
+func (m *Manager) RebuildSTRM(name string) error {
+	return m.runPrepared(name, nil, generator.RunOptions{RebuildSTRM: true})
+}
+
+func (m *Manager) runPrepared(name string, prepare func() error, options generator.RunOptions) error {
 	m.mu.Lock()
 	if m.running[name] {
 		m.mu.Unlock()
@@ -411,7 +421,7 @@ func (m *Manager) RunPrepared(name string, prepare func() error) error {
 			m.mu.Unlock()
 			m.notify()
 		}()
-		r = m.runTaskConfig(ctx, name, logbuf, cfg)
+		r = m.runTaskConfigWithOptions(ctx, name, logbuf, cfg, options)
 	}()
 
 	return nil
@@ -449,6 +459,10 @@ func (m *Manager) runTask(ctx context.Context, name string, logbuf *LogBuffer) *
 }
 
 func (m *Manager) runTaskConfig(ctx context.Context, name string, logbuf *LogBuffer, cfg *config.Config) *Result {
+	return m.runTaskConfigWithOptions(ctx, name, logbuf, cfg, generator.RunOptions{})
+}
+
+func (m *Manager) runTaskConfigWithOptions(ctx context.Context, name string, logbuf *LogBuffer, cfg *config.Config, options generator.RunOptions) *Result {
 	res := &Result{}
 
 	// 值拷贝：运行期间不受 addTask/updateTask/deleteTask 修改共享配置的影响
@@ -487,7 +501,7 @@ func (m *Manager) runTaskConfig(ctx context.Context, name string, logbuf *LogBuf
 
 	gen := generator.New(cfg, &taskCfg, drv, m.db)
 	gen.SetLogger(logbuf)
-	res.Result = gen.Run(ctx)
+	res.Result = gen.RunWithOptions(ctx, options)
 	if ctx.Err() != nil {
 		res.Error = "任务已停止"
 		logbuf.Logf("WARN", "任务 %s 已停止", name)

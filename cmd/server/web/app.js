@@ -800,14 +800,14 @@ async function taskReplaceAction() {
   } catch(e){ toast(e.message, 'danger'); }
 }
 
-// 任务工具：全量覆写（清空任务目录后重新生成，仿原版）
+// 任务工具：强制重建 STRM（保留刮削文件，不执行同步清理）
 async function taskOverwriteAction() {
   const taskName = window._editTask || document.getElementById('t-name').value.trim();
   if (!taskName) { toast('请先填写任务名称', 'warning'); return; }
-  if (!confirm('全量覆写将清空任务 ' + taskName + ' 目录并强制重新生成所有文件，确认继续？')) return;
+  if (!confirm('强制重建 STRM：重新生成任务 ' + taskName + ' 的 STRM，保留本地 nfo、图片、字幕等刮削文件及子目录，不覆盖远端同名非 STRM 文件，不清理孤立本地文件（即使原任务为同步模式）。确认继续？')) return;
   try {
     await api('/api/tasks/overwrite?name='+encodeURIComponent(taskName),'POST');
-    toast('已开始全量覆写');
+    toast('已开始强制重建 STRM');
     closeTaskToolModal();
   } catch(e){ toast(e.message, 'danger'); }
 }
@@ -816,7 +816,7 @@ async function taskOverwriteAction() {
 async function taskClearAction() {
   const taskName = window._editTask || document.getElementById('t-name').value.trim();
   if (!taskName) { toast('请先填写任务名称', 'warning'); return; }
-  if (!confirm('一键清除将删除任务 ' + taskName + ' 目录下的所有文件，此操作不可恢复！确认继续？')) return;
+  if (!confirm('一键清除将删除任务 ' + taskName + ' 的整个输出目录（包括 STRM、刮削文件和子目录），此操作不可恢复！确认继续？')) return;
   try {
     await api('/api/tasks/clear?name='+encodeURIComponent(taskName),'POST');
     toast('已清除任务目录');
@@ -960,7 +960,7 @@ const ACTION_NAMES = {
   storage_create:'创建存储', storage_update:'修改存储', storage_delete:'删除存储',
   settings_update:'修改设置', plugin_update:'修改插件', strm_replace:'替换STRM内容',
   task_trigger:'Webhook触发', emby_delete:'Emby删除同步', emby_delete_failed:'Emby删除失败',
-  task_overwrite:'全量覆写', task_clear:'一键清除'
+  task_overwrite:'强制重建 STRM', task_clear:'一键清除'
 };
 
 // ============ 审计日志 ============

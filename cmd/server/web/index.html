@@ -424,11 +424,11 @@
       </div>
       <div class="border rounded p-2 mb-2">
         <div class="d-flex justify-content-between align-items-center cursor-pointer" onclick="toggleCollapse('overwriteTaskForm')">
-          <span><i class="bi bi-pen me-2"></i>全量覆写</span><i class="bi bi-chevron-down" id="overwriteTaskChevron"></i>
+          <span><i class="bi bi-pen me-2"></i>强制重建 STRM</span><i class="bi bi-chevron-down" id="overwriteTaskChevron"></i>
         </div>
         <div class="collapse show m-2 text-center" id="overwriteTaskForm">
-          <button type="button" class="btn btn-primary btn-sm w-100 mt-2" onclick="taskOverwriteAction()">全量覆写</button>
-          <div class="form-text mt-1">全量更新，强制覆写任务下的所有文件</div>
+          <button type="button" class="btn btn-primary btn-sm w-100 mt-2" onclick="taskOverwriteAction()">强制重建 STRM</button>
+          <div class="form-text mt-1">忽略目录缓存重新生成 STRM；保留本地 nfo、图片、字幕等刮削文件及子目录，不覆盖非 STRM，不清理孤立文件（同步任务亦如此）</div>
         </div>
       </div>
       <div class="border rounded p-2 mb-2">
@@ -437,7 +437,7 @@
         </div>
         <div class="collapse show m-2 text-center" id="clearTaskDirForm">
           <button type="button" class="btn btn-danger btn-sm w-100 mt-2" onclick="taskClearAction()">一键清除</button>
-          <div class="form-text mt-1">清除任务下的所有文件</div>
+          <div class="form-text mt-1">危险：删除整个任务输出目录，包括 STRM、刮削文件及子目录，不可恢复</div>
         </div>
       </div>
     </div>

@@ -48,6 +48,7 @@ type Generator struct {
 	result  *Result
 	client  *http.Client
 	logger  Logger
+	options RunOptions
 
 	// 同步模式：远端存在的本地文件集合（相对 taskDir 的路径）
 	remoteSet map[string]bool
@@ -83,8 +84,20 @@ func (g *Generator) logf(level, format string, args ...any) {
 	}
 }
 
-// Run 执行生成
+// RunOptions applies only to one run, never to persisted task configuration.
+// RebuildSTRM bypasses directory caching, writes only STRM, and never cleans up.
+type RunOptions struct {
+	RebuildSTRM bool
+}
+
+// Run 执行普通增量/同步生成。
 func (g *Generator) Run(ctx context.Context) *Result {
+	return g.RunWithOptions(ctx, RunOptions{})
+}
+
+// RunWithOptions executes with explicit, non-persistent operation semantics.
+func (g *Generator) RunWithOptions(ctx context.Context, options RunOptions) *Result {
+	g.options = options
 	g.env = plugins.EnvForTask(ctx, g.cfg, g.task)
 	g.result = &Result{}
 	if err := config.ValidatePlugins(plugins.MergeConfig(g.cfg.Plugins, g.task.Plugins)); err != nil {
@@ -113,7 +126,20 @@ func (g *Generator) Run(ctx context.Context) *Result {
 		g.result.Errors = append(g.result.Errors, fmt.Sprintf("创建目录失败: %v", err))
 		return g.result
 	}
-	g.loadDirCache()
+	if g.options.RebuildSTRM {
+		// A STRM-only scan cannot certify that copy files were processed. Invalidate
+		// the normal namespace and do not publish a new cache for this partial mode.
+		g.dirCache = map[string]int64{}
+		if g.db != nil {
+			if err := g.db.DeleteDirCache(g.cacheKey()); err != nil {
+				g.result.Errors = append(g.result.Errors, fmt.Sprintf("清除重建缓存失败: %v", err))
+				return g.result
+			}
+		}
+		g.logf("INFO", "强制重建 STRM：保留刮削文件及所有孤立本地文件，不执行同步清理")
+	} else {
+		g.loadDirCache()
+	}
 
 	// 任务信息块（仿原版日志格式）
 	yn := func(b bool) string {
@@ -134,12 +160,12 @@ func (g *Generator) Run(ctx context.Context) *Result {
 	complete := g.walkDir(ctx, g.task.StoragePath, "", 0)
 	complete = complete && ctx.Err() == nil && len(g.result.Errors) == 0
 
-	if complete && !g.task.Incremental {
+	if complete && !g.options.RebuildSTRM && !g.task.Incremental {
 		g.logf("INFO", "同步模式：清理远端已不存在的本地文件")
 		g.cleanupLocal(ctx)
 	}
 	complete = complete && ctx.Err() == nil && len(g.result.Errors) == 0
-	if complete {
+	if complete && !g.options.RebuildSTRM {
 		g.saveDirCache()
 	} else if g.db != nil {
 		if err := g.db.DeleteDirCache(g.cacheKey()); err != nil {
@@ -214,7 +240,7 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 
 		if f.IsDir {
 			// 目录时间检查：远端目录未更新则跳过递归
-			if g.task.Incremental && g.task.DirTimeCheck && g.dirUnchanged(remotePath, f) {
+			if !g.options.RebuildSTRM && g.task.Incremental && g.task.DirTimeCheck && g.dirUnchanged(remotePath, f) {
 				g.logf("DEBUG", "目录未变化跳过: %s/%s", remotePath, f.Name)
 				g.result.SkippedDirs++
 				continue
@@ -228,8 +254,8 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(f.Name), "."))
 		switch {
 		case g.isMediaExt(ext):
-			g.generateStrm(f, remotePath, rel, ext)
-		case g.isCopyExt(ext):
+			g.generateStrm(ctx, f, remotePath, rel, ext)
+		case !g.options.RebuildSTRM && g.isCopyExt(ext):
 			g.copyFile(ctx, f, remotePath, localDir)
 		}
 	}
@@ -245,7 +271,7 @@ func (g *Generator) walkDir(ctx context.Context, remotePath, localRel string, mt
 }
 
 // generateStrm 为媒体文件生成 STRM
-func (g *Generator) generateStrm(f driver.File, remotePath, rel, ext string) {
+func (g *Generator) generateStrm(ctx context.Context, f driver.File, remotePath, rel, ext string) {
 	// 大小阈值
 	if g.env.MediaSize > 0 && f.Size < int64(g.env.MediaSize)*1024*1024 {
 		g.result.Skipped++
@@ -279,7 +305,7 @@ func (g *Generator) generateStrm(f driver.File, remotePath, rel, ext string) {
 
 	// 本地路径：远端相对目录 + STRM 文件名
 	localDir := filepath.Dir(filepath.Join(g.taskDir, filepath.FromSlash(rel)))
-	if !safeComponent(strmName) {
+	if !safeComponent(strmName) || (g.options.RebuildSTRM && !strings.EqualFold(filepath.Ext(strmName), ".strm")) {
 		g.result.Errors = append(g.result.Errors, "非法 STRM 文件名: "+strmName)
 		return
 	}
@@ -289,7 +315,7 @@ func (g *Generator) generateStrm(f driver.File, remotePath, rel, ext string) {
 		return
 	}
 
-	if err := writeStrm(localPath, content); err != nil {
+	if err := writeSTRMContext(ctx, localPath, content); err != nil {
 		msg := fmt.Sprintf("写入 %s 失败: %v", localPath, err)
 		g.result.Errors = append(g.result.Errors, msg)
 		g.logf("ERROR", "%s", msg)
@@ -522,6 +548,13 @@ func writeStrm(path, content string) error { return WriteSTRM(path, content) }
 
 // WriteSTRM atomically publishes content after successful write and close.
 func WriteSTRM(path, content string) error {
+	return writeSTRMContext(context.Background(), path, content)
+}
+
+func writeSTRMContext(ctx context.Context, path, content string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -534,7 +567,12 @@ func WriteSTRM(path, content string) error {
 		return finishCopy(out, err, tmp, path, os.Rename)
 	}
 	_, err = io.WriteString(out, content)
-	return finishCopy(out, err, tmp, path, os.Rename)
+	return finishCopy(out, err, tmp, path, func(src, dst string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return os.Rename(src, dst)
+	})
 }
 
 // escapePath URL 编码路径（保留 /）
